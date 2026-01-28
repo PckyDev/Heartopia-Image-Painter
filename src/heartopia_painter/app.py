@@ -190,13 +190,14 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.information(self, "Select image", "Import an image first.")
             return
 
-        # Build translucent preview pixmap from the resized image
-        img = QtGui.QImage(self._loaded.path)
-        if img.isNull():
-            # fallback: no preview
-            pix = None
-        else:
-            pix = QtGui.QPixmap.fromImage(img)
+        # Build preview pixmap from the resized grid (matches the preset exactly)
+        grid = self._loaded.grid
+        qimg = QtGui.QImage(grid.w, grid.h, QtGui.QImage.Format.Format_RGB888)
+        for y in range(grid.h):
+            for x in range(grid.w):
+                r, g, b = grid.get(x, y)
+                qimg.setPixel(x, y, QtGui.qRgb(r, g, b))
+        pix = QtGui.QPixmap.fromImage(qimg)
 
         self._overlay = RectSelectOverlay(preview_pixmap=pix)
         self._overlay.rectSelected.connect(self._on_canvas_rect_selected)

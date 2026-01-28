@@ -45,6 +45,9 @@ class RectSelectOverlay(QtWidgets.QWidget):
             geom = geom.united(screen.geometry())
         self.setGeometry(geom)
 
+        # For mapping local <-> global coordinates
+        self._global_origin = geom.topLeft()
+
     def start(self):
         self._drag_start = None
         self._drag_end = None
@@ -61,23 +64,31 @@ class RectSelectOverlay(QtWidgets.QWidget):
 
     def mousePressEvent(self, event: QtGui.QMouseEvent):
         if event.button() == QtCore.Qt.MouseButton.LeftButton:
-            self._drag_start = event.globalPosition().toPoint()
+            # Use widget-local coordinates; global coords can be negative on multi-monitor.
+            self._drag_start = event.position().toPoint()
             self._drag_end = self._drag_start
             self.update()
 
     def mouseMoveEvent(self, event: QtGui.QMouseEvent):
         if self._drag_start is not None:
-            self._drag_end = event.globalPosition().toPoint()
+            self._drag_end = event.position().toPoint()
             self.update()
 
     def mouseReleaseEvent(self, event: QtGui.QMouseEvent):
         if event.button() == QtCore.Qt.MouseButton.LeftButton and self._drag_start is not None:
-            self._drag_end = event.globalPosition().toPoint()
+            self._drag_end = event.position().toPoint()
             rect = self._current_rect()
             if rect is not None and rect.width() > 5 and rect.height() > 5:
                 self.hide()
+                # Convert back to global screen coordinates for downstream clicking.
+                global_rect = rect.translated(self._global_origin)
                 self.rectSelected.emit(
-                    RectResult(x=rect.x(), y=rect.y(), w=rect.width(), h=rect.height())
+                    RectResult(
+                        x=global_rect.x(),
+                        y=global_rect.y(),
+                        w=global_rect.width(),
+                        h=global_rect.height(),
+                    )
                 )
             else:
                 self.update()
@@ -109,6 +120,9 @@ class RectSelectOverlay(QtWidgets.QWidget):
         painter.setCompositionMode(QtGui.QPainter.CompositionMode.CompositionMode_Clear)
         painter.fillRect(rect, QtGui.QColor(0, 0, 0, 0))
         painter.setCompositionMode(QtGui.QPainter.CompositionMode.CompositionMode_SourceOver)
+
+        # Visible selection fill (helps UX even if transparency behaves oddly)
+        painter.fillRect(rect, QtGui.QColor(0, 200, 255, 40))
 
         # Preview image inside selection
         if self._preview is not None and not self._preview.isNull():
