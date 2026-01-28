@@ -37,6 +37,8 @@ class MainWindow(QtWidgets.QMainWindow):
         super().__init__()
         self.setWindowTitle("Heartopia Image Painter")
 
+        self.statusBar().showMessage("Ready")
+
         self._config_path = default_config_path()
         self._cfg = load_config(self._config_path)
 
@@ -48,6 +50,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._stop_flag = False
 
         self._build_ui()
+        self._apply_persisted_state()
         self._refresh_config_view()
 
     def _build_ui(self):
@@ -76,6 +79,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.lbl_canvas = QtWidgets.QLabel("Canvas: not selected")
         layout.addWidget(self.lbl_canvas)
+
+        self.lbl_global_buttons = QtWidgets.QLabel("Palette buttons: not set")
+        self.lbl_global_buttons.setWordWrap(True)
+        layout.addWidget(self.lbl_global_buttons)
 
         # Config
         cfg_group = QtWidgets.QGroupBox("Color configuration")
@@ -135,6 +142,30 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_paint.clicked.connect(self._on_paint)
         self.btn_stop.clicked.connect(self._on_stop)
 
+        self.cbo_preset.currentTextChanged.connect(self._on_preset_changed)
+
+    def _apply_persisted_state(self):
+        # Restore preset
+        if self._cfg.canvas_preset and self.cbo_preset.findText(self._cfg.canvas_preset) >= 0:
+            self.cbo_preset.setCurrentText(self._cfg.canvas_preset)
+
+        # Restore last canvas selection
+        if self._cfg.last_canvas_rect is not None:
+            self._canvas_rect = tuple(self._cfg.last_canvas_rect)
+
+        # Restore last image if it still exists
+        if self._cfg.last_image_path:
+            p = Path(self._cfg.last_image_path)
+            if p.exists():
+                try:
+                    w, h = self._selected_preset_wh()
+                    grid = load_and_resize_to_grid(str(p), w=w, h=h)
+                    self._loaded = LoadedImage(path=str(p), grid=grid)
+                    self.lbl_image.setText(f"Loaded: {p} ({w}x{h})")
+                except Exception:
+                    # If the image can't be loaded anymore, just ignore it.
+                    pass
+
     def _refresh_config_view(self):
         self.lst_colors.clear()
         for mc in self._cfg.main_colors:
@@ -146,8 +177,22 @@ class MainWindow(QtWidgets.QMainWindow):
             x, y, w, h = self._canvas_rect
             self.lbl_canvas.setText(f"Canvas: x={x}, y={y}, w={w}, h={h}")
 
+        sp = self._cfg.shades_panel_button_pos
+        bp = self._cfg.back_button_pos
+        sp_txt = f"{sp}" if sp is not None else "(not set)"
+        bp_txt = f"{bp}" if bp is not None else "(not set)"
+        self.lbl_global_buttons.setText(f"Palette buttons — Shades panel: {sp_txt} | Back: {bp_txt}")
+
     def _save_cfg(self):
         save_config(self._config_path, self._cfg)
+
+    def _confirm_capture(self, label: str, res: ClickCaptureResult):
+        self.statusBar().showMessage(f"Captured {label} at {res.pos} rgb={res.rgb}", 5000)
+        QtWidgets.QMessageBox.information(
+            self,
+            "Captured",
+            f"Captured {label}.\n\nPosition: {res.pos}\nRGB: {res.rgb}",
+        )
 
     def _capture_click_async(self, title: str, message: str, apply_capture):
         """Shows a prompt, then captures the next left-click + sampled RGB."""
@@ -185,6 +230,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._loaded = LoadedImage(path=path, grid=grid)
         self.lbl_image.setText(f"Loaded: {path} ({w}x{h})")
 
+        self._cfg.last_image_path = path
+        self._cfg.canvas_preset = self.cbo_preset.currentText()
+        self._save_cfg()
+
     def _on_select_canvas(self):
         if self._loaded is None:
             QtWidgets.QMessageBox.information(self, "Select image", "Import an image first.")
@@ -207,7 +256,15 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_canvas_rect_selected(self, r: RectResult):
         # Use selection as canvas rect (we'll refine snapping later)
         self._canvas_rect = (r.x, r.y, r.w, r.h)
+        self._cfg.last_canvas_rect = self._canvas_rect
+        self._save_cfg()
         self._refresh_config_view()
+
+        QtWidgets.QMessageBox.information(
+            self,
+            "Canvas selected",
+            f"Canvas area saved.\n\nPosition: ({r.x}, {r.y})\nSize: {r.w}x{r.h}",
+        )
 
     def _capture_global_button(self, which: str):
         QtWidgets.QMessageBox.information(
@@ -228,8 +285,15 @@ class MainWindow(QtWidgets.QMainWindow):
     def _apply_global_button_capture(self, which: str, res: ClickCaptureResult):
         if which == "shades":
             self._cfg.shades_panel_button_pos = res.pos
+            self._confirm_capture("shades-panel button", res)
         elif which == "back":
             self._cfg.back_button_pos = res.pos
+            self._confirm_capture("back button", res)
+        self._save_cfg()
+        self._refresh_config_view()
+
+    def _on_preset_changed(self, _text: str):
+        self._cfg.canvas_preset = self.cbo_preset.currentText()
         self._save_cfg()
 
     def _on_setup_new_color(self):
@@ -264,9 +328,12 @@ class MainWindow(QtWidgets.QMainWindow):
     def _wizard_set_global_then_continue(self, color_name: str, which: str, res: ClickCaptureResult):
         if which == "shades":
             self._cfg.shades_panel_button_pos = res.pos
+            self._confirm_capture("shades-panel button", res)
         elif which == "back":
             self._cfg.back_button_pos = res.pos
+            self._confirm_capture("back button", res)
         self._save_cfg()
+        self._refresh_config_view()
         # Continue capturing any remaining globals, then proceed.
         self._wizard_ensure_globals_then_continue(color_name)
 
@@ -278,6 +345,7 @@ class MainWindow(QtWidgets.QMainWindow):
         )
 
     def _wizard_after_main_capture(self, name: str, res: ClickCaptureResult):
+        self._confirm_capture(f"main color '{name}'", res)
         main = MainColor(name=name, pos=res.pos, rgb=res.rgb, shades=[])
         self._cfg.main_colors.append(main)
         self._save_cfg()
@@ -313,6 +381,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 sh = ShadeButton(name=shade_name, pos=res2.pos, rgb=res2.rgb)
                 shades.append(sh)
                 lst.addItem(f"{shade_name} @ {res2.pos} rgb={res2.rgb}")
+                self.statusBar().showMessage(f"Captured {shade_name} at {res2.pos} rgb={res2.rgb}", 4000)
             QtCore.QMetaObject.invokeMethod(
                 self, _add, QtCore.Qt.ConnectionType.QueuedConnection
             )
@@ -334,6 +403,12 @@ class MainWindow(QtWidgets.QMainWindow):
             self._save_cfg()
             self._refresh_config_view()
             dlg.accept()
+
+            QtWidgets.QMessageBox.information(
+                self,
+                "Shades saved",
+                f"Saved {len(shades)} shades for '{name}'.",
+            )
 
         btn_finish.clicked.connect(finish)
 

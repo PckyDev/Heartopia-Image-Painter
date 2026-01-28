@@ -50,6 +50,8 @@ This is an early version focused on:
 
 The app saves your palette/button coordinates to `config.json` in the repo folder.
 
+It also persists your last selected preset, last imported image path, and last selected canvas rectangle.
+
 ## Notes / limitations
 
 - Painting is currently a simple per-cell click approach.
