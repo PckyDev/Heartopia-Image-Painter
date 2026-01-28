@@ -15,14 +15,21 @@ RGB = Tuple[int, int, int]
 
 @dataclass
 class PainterOptions:
-    click_delay_s: float = 0.01
-    stroke_delay_s: float = 0.0
+    move_duration_s: float = 0.03
+    mouse_down_s: float = 0.02
+    after_click_delay_s: float = 0.06
+    panel_open_delay_s: float = 0.12
+    shade_select_delay_s: float = 0.06
+    row_delay_s: float = 0.10
 
 
-def _click(pos: Point, delay_s: float):
-    pyautogui.click(x=pos[0], y=pos[1])
-    if delay_s > 0:
-        time.sleep(delay_s)
+def _tap(pos: Point, opts: PainterOptions, extra_delay_s: float = 0.0):
+    # Move + mouseDown/mouseUp is more reliable for some games than pyautogui.click().
+    pyautogui.moveTo(pos[0], pos[1], duration=max(0.0, float(opts.move_duration_s)))
+    pyautogui.mouseDown()
+    time.sleep(max(0.0, float(opts.mouse_down_s)))
+    pyautogui.mouseUp()
+    time.sleep(max(0.0, float(opts.after_click_delay_s) + float(extra_delay_s)))
 
 
 def _find_best_match(rgb: RGB, cfg: AppConfig) -> Optional[Tuple[MainColor, ShadeButton]]:
@@ -94,36 +101,36 @@ def paint_grid(
             if last_main is None or main.name != last_main.name:
                 # Ensure we're on the main palette before selecting a new main color.
                 if in_shades_panel:
-                    _click(cfg.back_button_pos, options.click_delay_s)
+                    _tap(cfg.back_button_pos, options)
                     in_shades_panel = False
 
-                _click(main.pos, options.click_delay_s)
+                _tap(main.pos, options)
                 # Open shades panel
-                _click(cfg.shades_panel_button_pos, options.click_delay_s)
+                _tap(cfg.shades_panel_button_pos, options, extra_delay_s=options.panel_open_delay_s)
                 in_shades_panel = True
                 last_main = main
 
             # If something put us back on main palette, re-open shades panel.
             if not in_shades_panel:
-                _click(cfg.shades_panel_button_pos, options.click_delay_s)
+                _tap(cfg.shades_panel_button_pos, options, extra_delay_s=options.panel_open_delay_s)
                 in_shades_panel = True
 
             # Select shade
-            _click(shade.pos, options.click_delay_s)
+            _tap(shade.pos, options, extra_delay_s=options.shade_select_delay_s)
 
             # Paint cell
             cx = int(x0 + (x + 0.5) * cell_w)
             cy = int(y0 + (y + 0.5) * cell_h)
-            _click((cx, cy), options.click_delay_s)
+            _tap((cx, cy), options)
 
             if progress_cb:
                 progress_cb(x, y)
 
         # Return to main palette each row (safer)
         if in_shades_panel:
-            _click(cfg.back_button_pos, options.click_delay_s)
+            _tap(cfg.back_button_pos, options)
             in_shades_panel = False
         last_main = None
 
-        if options.stroke_delay_s > 0:
-            time.sleep(options.stroke_delay_s)
+        if options.row_delay_s > 0:
+            time.sleep(options.row_delay_s)

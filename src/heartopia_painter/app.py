@@ -8,8 +8,6 @@ from typing import Optional, Tuple
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from dataclasses import dataclass
-
 from .screen import get_screen_pixel_rgb
 from .config import AppConfig, MainColor, ShadeButton, default_config_path, load_config, save_config
 from .image_processing import PixelGrid, load_and_resize_to_grid
@@ -106,8 +104,10 @@ class MainWindow(QtWidgets.QMainWindow):
         row_cfg2 = QtWidgets.QHBoxLayout()
         self.btn_add_color = QtWidgets.QPushButton("Setup new color…")
         self.btn_remove_color = QtWidgets.QPushButton("Remove selected")
+        self.btn_fix_swap_rb = QtWidgets.QPushButton("Fix colors: swap R/B")
         row_cfg2.addWidget(self.btn_add_color)
         row_cfg2.addWidget(self.btn_remove_color)
+        row_cfg2.addWidget(self.btn_fix_swap_rb)
         cfg_layout.addLayout(row_cfg2)
 
         self.lst_colors = QtWidgets.QListWidget()
@@ -124,6 +124,38 @@ class MainWindow(QtWidgets.QMainWindow):
         # Paint
         paint_group = QtWidgets.QGroupBox("Paint")
         paint_layout = QtWidgets.QVBoxLayout(paint_group)
+
+        timing = QtWidgets.QGroupBox("Timing / reliability")
+        tlay = QtWidgets.QGridLayout(timing)
+
+        def ms_spin(min_ms: int, max_ms: int, step_ms: int):
+            s = QtWidgets.QSpinBox()
+            s.setRange(min_ms, max_ms)
+            s.setSingleStep(step_ms)
+            s.setSuffix(" ms")
+            return s
+
+        self.spin_move = ms_spin(0, 500, 5)
+        self.spin_down = ms_spin(0, 500, 5)
+        self.spin_after = ms_spin(0, 2000, 10)
+        self.spin_panel = ms_spin(0, 3000, 10)
+        self.spin_shade = ms_spin(0, 2000, 10)
+        self.spin_row = ms_spin(0, 5000, 10)
+
+        tlay.addWidget(QtWidgets.QLabel("Mouse move duration:"), 0, 0)
+        tlay.addWidget(self.spin_move, 0, 1)
+        tlay.addWidget(QtWidgets.QLabel("Mouse down hold:"), 1, 0)
+        tlay.addWidget(self.spin_down, 1, 1)
+        tlay.addWidget(QtWidgets.QLabel("After each click delay:"), 2, 0)
+        tlay.addWidget(self.spin_after, 2, 1)
+        tlay.addWidget(QtWidgets.QLabel("After opening shades panel:"), 0, 2)
+        tlay.addWidget(self.spin_panel, 0, 3)
+        tlay.addWidget(QtWidgets.QLabel("After selecting shade:"), 1, 2)
+        tlay.addWidget(self.spin_shade, 1, 3)
+        tlay.addWidget(QtWidgets.QLabel("Row delay:"), 2, 2)
+        tlay.addWidget(self.spin_row, 2, 3)
+
+        paint_layout.addWidget(timing)
 
         rowp = QtWidgets.QHBoxLayout()
         self.btn_paint = QtWidgets.QPushButton("Paint now")
@@ -147,10 +179,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_set_back_button.clicked.connect(lambda: self._capture_global_button("back"))
         self.btn_add_color.clicked.connect(self._on_setup_new_color)
         self.btn_remove_color.clicked.connect(self._on_remove_selected_color)
+        self.btn_fix_swap_rb.clicked.connect(self._on_fix_swap_rb)
         self.btn_paint.clicked.connect(self._on_paint)
         self.btn_stop.clicked.connect(self._on_stop)
 
         self.cbo_preset.currentTextChanged.connect(self._on_preset_changed)
+
+        self.spin_move.valueChanged.connect(self._on_timing_changed)
+        self.spin_down.valueChanged.connect(self._on_timing_changed)
+        self.spin_after.valueChanged.connect(self._on_timing_changed)
+        self.spin_panel.valueChanged.connect(self._on_timing_changed)
+        self.spin_shade.valueChanged.connect(self._on_timing_changed)
+        self.spin_row.valueChanged.connect(self._on_timing_changed)
 
     def _apply_persisted_state(self):
         # Restore preset
@@ -173,6 +213,48 @@ class MainWindow(QtWidgets.QMainWindow):
                 except Exception:
                     # If the image can't be loaded anymore, just ignore it.
                     pass
+
+        # Restore timing controls
+        self._sync_timing_ui_from_cfg()
+
+    def _sync_timing_ui_from_cfg(self):
+        def to_ms(v: float) -> int:
+            return int(round(max(0.0, float(v)) * 1000.0))
+
+        # Block signals to avoid saving on startup repeatedly
+        widgets = [
+            self.spin_move,
+            self.spin_down,
+            self.spin_after,
+            self.spin_panel,
+            self.spin_shade,
+            self.spin_row,
+        ]
+        for w in widgets:
+            w.blockSignals(True)
+
+        self.spin_move.setValue(to_ms(self._cfg.move_duration_s))
+        self.spin_down.setValue(to_ms(self._cfg.mouse_down_s))
+        self.spin_after.setValue(to_ms(self._cfg.after_click_delay_s))
+        self.spin_panel.setValue(to_ms(self._cfg.panel_open_delay_s))
+        self.spin_shade.setValue(to_ms(self._cfg.shade_select_delay_s))
+        self.spin_row.setValue(to_ms(self._cfg.row_delay_s))
+
+        for w in widgets:
+            w.blockSignals(False)
+
+    def _on_timing_changed(self, _value: int):
+        # Persist timing settings immediately
+        def to_s(ms: int) -> float:
+            return max(0.0, float(ms) / 1000.0)
+
+        self._cfg.move_duration_s = to_s(self.spin_move.value())
+        self._cfg.mouse_down_s = to_s(self.spin_down.value())
+        self._cfg.after_click_delay_s = to_s(self.spin_after.value())
+        self._cfg.panel_open_delay_s = to_s(self.spin_panel.value())
+        self._cfg.shade_select_delay_s = to_s(self.spin_shade.value())
+        self._cfg.row_delay_s = to_s(self.spin_row.value())
+        self._save_cfg()
 
     def _refresh_config_view(self):
         self.lst_colors.clear()
@@ -471,6 +553,33 @@ class MainWindow(QtWidgets.QMainWindow):
         self._save_cfg()
         self._refresh_config_view()
 
+    def _on_fix_swap_rb(self):
+        if (
+            QtWidgets.QMessageBox.question(
+                self,
+                "Swap R/B channels?",
+                "If your captured palette colors look wrong (e.g. yellows behave like blues),\n"
+                "you may have captured colors when the sampler had swapped channels.\n\n"
+                "This will swap the Red and Blue channels for ALL saved main/shade colors.\n\n"
+                "Proceed?",
+            )
+            != QtWidgets.QMessageBox.StandardButton.Yes
+        ):
+            return
+
+        def swap(rgb):
+            r, g, b = rgb
+            return (b, g, r)
+
+        for mc in self._cfg.main_colors:
+            mc.rgb = swap(mc.rgb)
+            for sh in mc.shades:
+                sh.rgb = swap(sh.rgb)
+
+        self._save_cfg()
+        self._refresh_config_view()
+        QtWidgets.QMessageBox.information(self, "Done", "Swapped R/B for saved colors.")
+
     def _on_paint(self):
         if self._loaded is None:
             QtWidgets.QMessageBox.information(self, "Missing", "Import an image first.")
@@ -523,7 +632,14 @@ class MainWindow(QtWidgets.QMainWindow):
 
         def work():
             try:
-                opts = PainterOptions(click_delay_s=0.01)
+                opts = PainterOptions(
+                    move_duration_s=self._cfg.move_duration_s,
+                    mouse_down_s=self._cfg.mouse_down_s,
+                    after_click_delay_s=self._cfg.after_click_delay_s,
+                    panel_open_delay_s=self._cfg.panel_open_delay_s,
+                    shade_select_delay_s=self._cfg.shade_select_delay_s,
+                    row_delay_s=self._cfg.row_delay_s,
+                )
 
                 def get_pixel(x: int, y: int):
                     return self._loaded.grid.get(x, y)

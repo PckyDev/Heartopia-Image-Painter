@@ -35,6 +35,14 @@ class AppConfig:
     last_image_path: Optional[str] = None
     last_canvas_rect: Optional[Rect] = None
 
+    # Painting timing (seconds). These defaults are conservative to improve click reliability.
+    move_duration_s: float = 0.03
+    mouse_down_s: float = 0.02
+    after_click_delay_s: float = 0.06
+    panel_open_delay_s: float = 0.12
+    shade_select_delay_s: float = 0.06
+    row_delay_s: float = 0.10
+
     # Buttons that are global (same regardless of which color is selected)
     shades_panel_button_pos: Optional[Point] = None
     back_button_pos: Optional[Point] = None
@@ -70,6 +78,19 @@ class AppConfig:
         if cfg.last_image_path is not None:
             cfg.last_image_path = str(cfg.last_image_path)
         cfg.last_canvas_rect = to_tuple4(data.get("last_canvas_rect"))
+
+        def to_float(v, default: float) -> float:
+            try:
+                return float(v)
+            except Exception:
+                return default
+
+        cfg.move_duration_s = to_float(data.get("move_duration_s"), cfg.move_duration_s)
+        cfg.mouse_down_s = to_float(data.get("mouse_down_s"), cfg.mouse_down_s)
+        cfg.after_click_delay_s = to_float(data.get("after_click_delay_s"), cfg.after_click_delay_s)
+        cfg.panel_open_delay_s = to_float(data.get("panel_open_delay_s"), cfg.panel_open_delay_s)
+        cfg.shade_select_delay_s = to_float(data.get("shade_select_delay_s"), cfg.shade_select_delay_s)
+        cfg.row_delay_s = to_float(data.get("row_delay_s"), cfg.row_delay_s)
         cfg.shades_panel_button_pos = to_tuple2(data.get("shades_panel_button_pos"))
         cfg.back_button_pos = to_tuple2(data.get("back_button_pos"))
 
