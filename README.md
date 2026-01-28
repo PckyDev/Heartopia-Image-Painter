@@ -1,21 +1,40 @@
-# Heartopia-Image-Painter
+# Heartopia Image Painter
 
-Simple GUI tool to "paint" an imported image onto the Heartopia in-game canvas by automating palette selection + clicks.
+A small desktop GUI that helps you “paint” an image into **Heartopia** by:
 
-## Status
+- Resizing your image to a supported in-game canvas grid
+- Letting you select the on-screen canvas area with a translucent preview overlay
+- Clicking the correct palette buttons (main color → shade) and then clicking each pixel
 
-This is an early version focused on:
+This app uses on-screen overlays for picking points/areas and uses mouse automation to do the painting.
 
-- Import any image
-- Resize to the 1:1 preset (30x30)
-- Select the on-screen canvas area (with translucent preview overlay)
-- Configure palette button positions (main colors + shades)
-- Paint by clicking cells in the selected area
+## Features
 
-## Setup
+- Import any image and resize it to a preset grid
+- On-screen **canvas area selection** with translucent preview
+- Guided **palette setup wizard** (captures button positions and samples their RGB)
+- Adjustable **timing / reliability** controls (useful if clicks don’t register)
+- Multi-part **T-Shirt** preset (each part remembers its own image + canvas area)
+- Persistent settings saved to `config.json`
 
-1. Create / activate a Python venv.
-2. Install dependencies:
+## Requirements
+
+- Windows (recommended; this is what it’s been tested on)
+- Python 3.11+ (a recent Python is recommended)
+
+## Install (Windows / PowerShell)
+
+From the repo folder:
+
+1. Create a virtual environment:
+
+	- `py -m venv .venv`
+
+2. Activate it:
+
+	- `./.venv/Scripts/Activate.ps1`
+
+3. Install dependencies:
 
 	- `pip install -r requirements.txt`
 
@@ -23,37 +42,82 @@ This is an early version focused on:
 
 - `python main.py`
 
-## Basic workflow
+## Presets
 
-1. Import an image.
-2. Select canvas preset: `1:1 (30x30)`.
-3. Click **Select canvas area…** and drag a rectangle over the in-game canvas.
-	- The app shows a translucent preview of your image while you drag.
-4. Configure colors:
-	- Click **Setup new color…**
-	- If you have not set them yet, the wizard will first ask you to click:
-	  - the **shades-panel** open button
-	  - the **back** button (returns to main colors)
-	- Then it will ask you to click:
-	  - the **main color** button
-	  - every **shade button** for that color (keep clicking shades until done)
-	  - click **Finish** when you’re done capturing shades
-5. Click **Paint now**.
+| Preset | Part | Size |
+|---|---|---:|
+| 1:1 | (single) | 30×30 |
+| T-Shirt | Front | 64×80 |
+| T-Shirt | Back | 64×80 |
+| T-Shirt | Left Sleeve | 64×48 |
+| T-Shirt | Right Sleeve | 64×48 |
+
+## Quick start
+
+1. Open Heartopia and make sure the palette + canvas you want to paint on are visible.
+2. Start the app: `python main.py`
+3. Choose a **Canvas preset**.
+	- If you choose **T-Shirt**, also choose a **Part** (Front/Back/Sleeves).
+4. Click **Import image…** and pick an image.
+5. Click **Select canvas area…** and drag a rectangle over the in-game canvas.
+	- You’ll see a translucent preview to help align it.
+6. Set up your palette (one time per palette layout):
+	- Click **Setup new color…** and follow the prompts.
+7. (Optional) Adjust timing values under **Timing / reliability**.
+8. Click **Paint now**.
+
+## Palette setup (how the wizard works)
+
+When you click **Setup new color…**, the app will guide you through:
+
+1. Capturing the **Shades panel** button (opens the shades UI) and the **Back** button (returns to main colors) if they haven’t been set yet.
+2. Capturing the **main color** button for the color you’re adding.
+3. Capturing all **shade** buttons for that color:
+	- You open the shades panel in-game.
+	- In the floating “Capture shades” window, click **Capture next shade**, then click the shade button location in the game.
+	- Repeat until done, then click **Finish**.
+
+Notes:
+
+- The point-picking overlay samples the pixel RGB at the point you click.
+- The overlay click is intercepted by the app (it does not press the in-game button).
+
+## Tips for reliable painting
+
+- If clicks don’t register in-game, increase:
+  - **Mouse down hold** (e.g. 20–50 ms)
+  - **After each click delay** (e.g. 60–120 ms)
+- Keep the game window focused and don’t move the mouse during painting.
+- On multi-monitor / DPI scaling setups, if overlays don’t line up, try moving the game to your primary display.
 
 ## Safety
 
 - This app controls your mouse and clicks on your screen.
-- There is a short countdown before painting starts so you can focus the game window.
+- A short countdown appears before painting starts so you can focus the game window.
 - PyAutoGUI failsafe is enabled: move the mouse to the **top-left corner** to abort.
 
-## Configuration file
+## Configuration (`config.json`)
 
-The app saves your palette/button coordinates to `config.json` in the repo folder.
+The app writes settings to `config.json` in the repo folder, including:
 
-It also persists your last selected preset, last imported image path, and last selected canvas rectangle.
+- Palette button positions + sampled colors
+- Your last selected preset
+- Your last imported image path and selected canvas area
+- Timing settings
+- For **T-Shirt**, each part stores its own last image + canvas rectangle
+
+Resetting:
+
+- To fully reset the app’s saved state, close the app and delete `config.json`.
+
+## Troubleshooting
+
+- **Wrong colors (e.g. yellows behave like blues):** use the **Fix colors: swap R/B** button (this edits your saved palette colors).
+- **Overlay appears but you can’t click it:** press **ESC** to cancel and try again (make sure the app window isn’t minimized).
+- **Painting starts on the wrong screen / wrong spot:** re-select the canvas area and verify the game hasn’t moved since selection.
 
 ## Notes / limitations
 
 - Painting is currently a simple per-cell click approach.
-- Color matching is currently "closest configured shade" (RGB distance). Better mapping and speedups can be added later.
+- Color matching is “closest configured shade” (RGB distance).
 
