@@ -15,9 +15,24 @@ from .overlay import PointResult, PointSelectOverlay, RectResult, RectSelectOver
 from .paint import PainterOptions, paint_grid
 
 
-CANVAS_PRESETS = {
+TSHIRT_PRESET_NAME = "T-Shirt"
+
+SINGLE_PRESETS: dict[str, Tuple[int, int]] = {
     "1:1 (30x30)": (30, 30),
 }
+
+TSHIRT_PARTS: dict[str, Tuple[int, int]] = {
+    "Front": (64, 80),
+    "Back": (64, 80),
+    "Left Sleeve": (64, 48),
+    "Right Sleeve": (64, 48),
+}
+
+
+def selection_key(preset: str, part: Optional[str]) -> str:
+    if preset == TSHIRT_PRESET_NAME:
+        return f"{preset}::{part or 'Front'}"
+    return preset
 
 
 @dataclass
@@ -73,12 +88,19 @@ class MainWindow(QtWidgets.QMainWindow):
         row1.addWidget(self.lbl_image, 1)
         layout.addLayout(row1)
 
-        # Preset
+        # Preset / Part
         row2 = QtWidgets.QHBoxLayout()
         row2.addWidget(QtWidgets.QLabel("Canvas preset:"))
         self.cbo_preset = QtWidgets.QComboBox()
-        self.cbo_preset.addItems(list(CANVAS_PRESETS.keys()))
+        self.cbo_preset.addItems([*SINGLE_PRESETS.keys(), TSHIRT_PRESET_NAME])
         row2.addWidget(self.cbo_preset, 1)
+
+        self.lbl_part = QtWidgets.QLabel("Part:")
+        self.cbo_part = QtWidgets.QComboBox()
+        self.cbo_part.addItems(list(TSHIRT_PARTS.keys()))
+        row2.addWidget(self.lbl_part)
+        row2.addWidget(self.cbo_part)
+
         self.btn_select_canvas = QtWidgets.QPushButton("Select canvas area…")
         row2.addWidget(self.btn_select_canvas)
         layout.addLayout(row2)
@@ -184,6 +206,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_stop.clicked.connect(self._on_stop)
 
         self.cbo_preset.currentTextChanged.connect(self._on_preset_changed)
+        self.cbo_part.currentTextChanged.connect(self._on_part_changed)
 
         self.spin_move.valueChanged.connect(self._on_timing_changed)
         self.spin_down.valueChanged.connect(self._on_timing_changed)
@@ -197,22 +220,14 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._cfg.canvas_preset and self.cbo_preset.findText(self._cfg.canvas_preset) >= 0:
             self.cbo_preset.setCurrentText(self._cfg.canvas_preset)
 
-        # Restore last canvas selection
-        if self._cfg.last_canvas_rect is not None:
-            self._canvas_rect = tuple(self._cfg.last_canvas_rect)
+        # Restore T-Shirt part
+        if self._cfg.tshirt_part and self.cbo_part.findText(self._cfg.tshirt_part) >= 0:
+            self.cbo_part.setCurrentText(self._cfg.tshirt_part)
 
-        # Restore last image if it still exists
-        if self._cfg.last_image_path:
-            p = Path(self._cfg.last_image_path)
-            if p.exists():
-                try:
-                    w, h = self._selected_preset_wh()
-                    grid = load_and_resize_to_grid(str(p), w=w, h=h)
-                    self._loaded = LoadedImage(path=str(p), grid=grid)
-                    self.lbl_image.setText(f"Loaded: {p} ({w}x{h})")
-                except Exception:
-                    # If the image can't be loaded anymore, just ignore it.
-                    pass
+        self._update_part_ui_visibility()
+
+        # Restore per-selection state (image + canvas)
+        self._restore_selection_state()
 
         # Restore timing controls
         self._sync_timing_ui_from_cfg()
@@ -261,11 +276,16 @@ class MainWindow(QtWidgets.QMainWindow):
         for mc in self._cfg.main_colors:
             self.lst_colors.addItem(f"{mc.name}  ({len(mc.shades)} shades)")
 
+        preset = self.cbo_preset.currentText()
+        part_txt = ""
+        if preset == TSHIRT_PRESET_NAME:
+            part_txt = f" — {self.cbo_part.currentText()}"
+
         if self._canvas_rect is None:
-            self.lbl_canvas.setText("Canvas: not selected")
+            self.lbl_canvas.setText(f"Canvas{part_txt}: not selected")
         else:
             x, y, w, h = self._canvas_rect
-            self.lbl_canvas.setText(f"Canvas: x={x}, y={y}, w={w}, h={h}")
+            self.lbl_canvas.setText(f"Canvas{part_txt}: x={x}, y={y}, w={w}, h={h}")
 
         sp = self._cfg.shades_panel_button_pos
         bp = self._cfg.back_button_pos
@@ -305,8 +325,53 @@ class MainWindow(QtWidgets.QMainWindow):
         ov.start()
 
     def _selected_preset_wh(self) -> Tuple[int, int]:
-        key = self.cbo_preset.currentText()
-        return CANVAS_PRESETS.get(key, (30, 30))
+        preset = self.cbo_preset.currentText()
+        if preset == TSHIRT_PRESET_NAME:
+            part = self.cbo_part.currentText() or self._cfg.tshirt_part or "Front"
+            return TSHIRT_PARTS.get(part, TSHIRT_PARTS["Front"])
+        return SINGLE_PRESETS.get(preset, (30, 30))
+
+    def _current_selection_key(self) -> str:
+        preset = self.cbo_preset.currentText()
+        part = self.cbo_part.currentText() if preset == TSHIRT_PRESET_NAME else None
+        return selection_key(preset, part)
+
+    def _update_part_ui_visibility(self) -> None:
+        is_tshirt = self.cbo_preset.currentText() == TSHIRT_PRESET_NAME
+        self.lbl_part.setVisible(is_tshirt)
+        self.cbo_part.setVisible(is_tshirt)
+
+    def _restore_selection_state(self) -> None:
+        sel_key = self._current_selection_key()
+
+        rect = self._cfg.last_canvas_rect_by_key.get(sel_key)
+        if rect is None and self._cfg.last_canvas_rect is not None:
+            rect = tuple(self._cfg.last_canvas_rect)
+        self._canvas_rect = tuple(rect) if rect is not None else None
+
+        img_path = self._cfg.last_image_path_by_key.get(sel_key)
+        if not img_path and self._cfg.last_image_path:
+            img_path = self._cfg.last_image_path
+
+        self._loaded = None
+        if img_path:
+            p = Path(img_path)
+            if p.exists():
+                try:
+                    w, h = self._selected_preset_wh()
+                    grid = load_and_resize_to_grid(str(p), w=w, h=h)
+                    self._loaded = LoadedImage(path=str(p), grid=grid)
+                    self.lbl_image.setText(f"Loaded: {p} ({w}x{h})")
+                except Exception:
+                    # If the image can't be loaded anymore, just ignore it.
+                    self._loaded = None
+                    self.lbl_image.setText("No image loaded")
+            else:
+                self.lbl_image.setText("No image loaded")
+        else:
+            self.lbl_image.setText("No image loaded")
+
+        self._refresh_config_view()
 
     def _on_load(self):
         w, h = self._selected_preset_wh()
@@ -327,8 +392,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._loaded = LoadedImage(path=path, grid=grid)
         self.lbl_image.setText(f"Loaded: {path} ({w}x{h})")
 
+        sel_key = self._current_selection_key()
+        self._cfg.last_image_path_by_key[sel_key] = path
         self._cfg.last_image_path = path
         self._cfg.canvas_preset = self.cbo_preset.currentText()
+        if self.cbo_preset.currentText() == TSHIRT_PRESET_NAME:
+            self._cfg.tshirt_part = self.cbo_part.currentText() or self._cfg.tshirt_part
         self._save_cfg()
 
     def _on_select_canvas(self):
@@ -353,6 +422,9 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_canvas_rect_selected(self, r: RectResult):
         # Use selection as canvas rect (we'll refine snapping later)
         self._canvas_rect = (r.x, r.y, r.w, r.h)
+
+        sel_key = self._current_selection_key()
+        self._cfg.last_canvas_rect_by_key[sel_key] = self._canvas_rect
         self._cfg.last_canvas_rect = self._canvas_rect
         self._save_cfg()
         self._refresh_config_view()
@@ -382,7 +454,18 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_preset_changed(self, _text: str):
         self._cfg.canvas_preset = self.cbo_preset.currentText()
+        self._update_part_ui_visibility()
+        if self.cbo_preset.currentText() == TSHIRT_PRESET_NAME:
+            self._cfg.tshirt_part = self.cbo_part.currentText() or self._cfg.tshirt_part
         self._save_cfg()
+        self._restore_selection_state()
+
+    def _on_part_changed(self, _text: str):
+        if self.cbo_preset.currentText() != TSHIRT_PRESET_NAME:
+            return
+        self._cfg.tshirt_part = self.cbo_part.currentText() or self._cfg.tshirt_part
+        self._save_cfg()
+        self._restore_selection_state()
 
     def _on_setup_new_color(self):
         name, ok = QtWidgets.QInputDialog.getText(self, "New color", "Color name:")

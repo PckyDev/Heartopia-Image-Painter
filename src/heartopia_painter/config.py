@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 
 Point = Tuple[int, int]
@@ -34,6 +34,13 @@ class AppConfig:
     # Convenience: restore last session state
     last_image_path: Optional[str] = None
     last_canvas_rect: Optional[Rect] = None
+
+    # Per-selection persistence (used for multi-part presets like T-Shirt)
+    last_image_path_by_key: Dict[str, str] = field(default_factory=dict)
+    last_canvas_rect_by_key: Dict[str, Rect] = field(default_factory=dict)
+
+    # For T-Shirt preset
+    tshirt_part: str = "Front"
 
     # Painting timing (seconds). These defaults are conservative to improve click reliability.
     move_duration_s: float = 0.03
@@ -67,6 +74,26 @@ class AppConfig:
                 return None
             return (int(v[0]), int(v[1]), int(v[2]), int(v[3]))
 
+        def to_rect_map(v) -> Dict[str, Rect]:
+            if not isinstance(v, dict):
+                return {}
+            out: Dict[str, Rect] = {}
+            for k, rv in v.items():
+                r = to_tuple4(rv)
+                if r is not None:
+                    out[str(k)] = r
+            return out
+
+        def to_str_map(v) -> Dict[str, str]:
+            if not isinstance(v, dict):
+                return {}
+            out: Dict[str, str] = {}
+            for k, sv in v.items():
+                if sv is None:
+                    continue
+                out[str(k)] = str(sv)
+            return out
+
         cfg = AppConfig()
         preset = data.get("canvas_preset", "1:1 (30x30)")
         # Backward compatibility with early configs that stored "30x30".
@@ -78,6 +105,17 @@ class AppConfig:
         if cfg.last_image_path is not None:
             cfg.last_image_path = str(cfg.last_image_path)
         cfg.last_canvas_rect = to_tuple4(data.get("last_canvas_rect"))
+
+        cfg.last_image_path_by_key = to_str_map(data.get("last_image_path_by_key"))
+        cfg.last_canvas_rect_by_key = to_rect_map(data.get("last_canvas_rect_by_key"))
+
+        cfg.tshirt_part = str(data.get("tshirt_part", cfg.tshirt_part))
+
+        # Migrate legacy single-value fields into the per-key maps if maps are empty.
+        if cfg.last_image_path and "1:1 (30x30)" not in cfg.last_image_path_by_key:
+            cfg.last_image_path_by_key["1:1 (30x30)"] = cfg.last_image_path
+        if cfg.last_canvas_rect and "1:1 (30x30)" not in cfg.last_canvas_rect_by_key:
+            cfg.last_canvas_rect_by_key["1:1 (30x30)"] = cfg.last_canvas_rect
 
         def to_float(v, default: float) -> float:
             try:
