@@ -365,50 +365,57 @@ class MainWindow(QtWidgets.QMainWindow):
             "When you are done, click 'Finish'.",
         )
 
-        # Collect shade clicks until user clicks Finish
+        # Collect shade picks until user clicks Finish.
+        # Important: keep this NON-MODAL so you can freely interact with the game.
         shades: list[ShadeButton] = []
         self._shade_capture_active = True
 
         dlg = QtWidgets.QDialog(self)
-        dlg.setWindowTitle("Capture shades")
+        dlg.setWindowTitle(f"Capture shades — {name}")
+        dlg.setModal(False)
+        dlg.setWindowFlags(dlg.windowFlags() | QtCore.Qt.WindowType.WindowStaysOnTopHint)
+
         v = QtWidgets.QVBoxLayout(dlg)
-        lbl = QtWidgets.QLabel("Click shade buttons in-game. Captured:")
+        lbl = QtWidgets.QLabel(
+            "Click 'Capture next shade', then click the shade button location in the game.\n"
+            "Repeat until done, then click Finish." 
+        )
+        lbl.setWordWrap(True)
         v.addWidget(lbl)
+
         lst = QtWidgets.QListWidget()
         v.addWidget(lst)
+
+        row = QtWidgets.QHBoxLayout()
+        btn_capture = QtWidgets.QPushButton("Capture next shade")
         btn_finish = QtWidgets.QPushButton("Finish")
-        v.addWidget(btn_finish)
+        row.addWidget(btn_capture)
+        row.addWidget(btn_finish)
+        v.addLayout(row)
 
         def add_shade_capture(res2: ClickCaptureResult):
-            def _add():
-                if not getattr(self, "_shade_capture_active", False):
-                    return
-                shade_name = f"shade-{len(shades)+1}"
-                sh = ShadeButton(name=shade_name, pos=res2.pos, rgb=res2.rgb)
-                shades.append(sh)
-                lst.addItem(f"{shade_name} @ {res2.pos} rgb={res2.rgb}")
-                self.statusBar().showMessage(f"Captured {shade_name} at {res2.pos} rgb={res2.rgb}", 4000)
-            self._run_on_ui_thread(_add)
+            if not getattr(self, "_shade_capture_active", False):
+                return
+            shade_name = f"shade-{len(shades)+1}"
+            sh = ShadeButton(name=shade_name, pos=res2.pos, rgb=res2.rgb)
+            shades.append(sh)
+            lst.addItem(f"{shade_name} @ {res2.pos} rgb={res2.rgb}")
+            self.statusBar().showMessage(f"Captured {shade_name} at {res2.pos} rgb={res2.rgb}", 4000)
 
-        def arm_next():
-            if not self._shade_capture_active:
+        def capture_one():
+            if not getattr(self, "_shade_capture_active", False):
                 return
 
-            ov = PointSelectOverlay(
-                instruction="Click the next SHADE button location (ESC/right-click to cancel)"
-            )
+            ov = PointSelectOverlay(instruction="Click the SHADE button location (ESC/right-click to cancel)")
             self._point_overlay = ov
 
             def on_sel(p: PointResult):
                 rgb = get_screen_pixel_rgb(int(p.x), int(p.y))
                 r = ClickCaptureResult(pos=(int(p.x), int(p.y)), rgb=rgb)
-                add_shade_capture(r)
-                # Chain the next capture
-                self._run_on_ui_thread(arm_next)
+                self._run_on_ui_thread(lambda: add_shade_capture(r))
 
             def on_cancel():
-                # Just stop capturing more shades; user can hit Finish.
-                self.statusBar().showMessage("Shade capture cancelled (click Finish to save)", 5000)
+                self.statusBar().showMessage("Shade capture cancelled", 3000)
 
             ov.pointSelected.connect(on_sel)
             ov.cancelled.connect(on_cancel)
@@ -423,7 +430,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     break
             self._save_cfg()
             self._refresh_config_view()
-            dlg.accept()
+            dlg.close()
 
             QtWidgets.QMessageBox.information(
                 self,
@@ -431,10 +438,18 @@ class MainWindow(QtWidgets.QMainWindow):
                 f"Saved {len(shades)} shades for '{name}'.",
             )
 
+        def on_close(_event):
+            # If user closes the window, stop capturing to avoid orphan overlays.
+            self._shade_capture_active = False
+
+        dlg.closeEvent = on_close  # type: ignore[method-assign]
+
+        btn_capture.clicked.connect(capture_one)
         btn_finish.clicked.connect(finish)
 
-        arm_next()
-        dlg.exec()
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
 
     def _on_remove_selected_color(self):
         idx = self.lst_colors.currentRow()
