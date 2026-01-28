@@ -14,6 +14,12 @@ class RectResult:
     h: int
 
 
+@dataclass
+class PointResult:
+    x: int
+    y: int
+
+
 class RectSelectOverlay(QtWidgets.QWidget):
     """Fullscreen overlay that lets the user drag out a rectangle.
 
@@ -149,3 +155,90 @@ class RectSelectOverlay(QtWidgets.QWidget):
             QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop,
             f"{rect.width()}x{rect.height()}  (ESC to cancel)",
         )
+
+
+class PointSelectOverlay(QtWidgets.QWidget):
+    """Fullscreen overlay to pick a single point on screen.
+
+    This is used instead of global mouse hooks (which can be flaky on some setups).
+    """
+
+    pointSelected = QtCore.Signal(PointResult)
+    cancelled = QtCore.Signal()
+
+    def __init__(self, instruction: str = "Click to select (ESC to cancel)", parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(
+            QtCore.Qt.WindowType.FramelessWindowHint
+            | QtCore.Qt.WindowType.WindowStaysOnTopHint
+            | QtCore.Qt.WindowType.Tool
+        )
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.setCursor(QtCore.Qt.CursorShape.CrossCursor)
+
+        self._instruction = instruction
+        self._mouse_pos: Optional[QtCore.QPoint] = None
+
+        geom = QtCore.QRect()
+        for screen in QtWidgets.QApplication.screens():
+            geom = geom.united(screen.geometry())
+        self.setGeometry(geom)
+        self._global_origin = geom.topLeft()
+
+    def start(self):
+        self._mouse_pos = None
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def keyPressEvent(self, event: QtGui.QKeyEvent):
+        if event.key() == QtCore.Qt.Key.Key_Escape:
+            self.hide()
+            self.cancelled.emit()
+            return
+        super().keyPressEvent(event)
+
+    def mouseMoveEvent(self, event: QtGui.QMouseEvent):
+        self._mouse_pos = event.position().toPoint()
+        self.update()
+
+    def mousePressEvent(self, event: QtGui.QMouseEvent):
+        if event.button() == QtCore.Qt.MouseButton.LeftButton:
+            local = event.position().toPoint()
+            global_pt = local + self._global_origin
+            self.hide()
+            self.pointSelected.emit(PointResult(x=global_pt.x(), y=global_pt.y()))
+            return
+        if event.button() == QtCore.Qt.MouseButton.RightButton:
+            self.hide()
+            self.cancelled.emit()
+            return
+
+    def paintEvent(self, _event: QtGui.QPaintEvent):
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+
+        painter.fillRect(self.rect(), QtGui.QColor(0, 0, 0, 70))
+
+        # Instruction box
+        box = QtCore.QRect(20, 20, 520, 64)
+        painter.setPen(QtCore.Qt.PenStyle.NoPen)
+        painter.setBrush(QtGui.QColor(0, 0, 0, 160))
+        painter.drawRoundedRect(box, 8, 8)
+        painter.setPen(QtGui.QColor(255, 255, 255, 235))
+        painter.drawText(
+            box.adjusted(12, 10, -12, -10),
+            QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter,
+            self._instruction,
+        )
+
+        # Crosshair
+        if self._mouse_pos is not None:
+            p = self._mouse_pos
+            pen = QtGui.QPen(QtGui.QColor(0, 200, 255, 230))
+            pen.setWidth(2)
+            painter.setPen(pen)
+            painter.drawLine(p.x() - 15, p.y(), p.x() + 15, p.y())
+            painter.drawLine(p.x(), p.y() - 15, p.x(), p.y() + 15)
+

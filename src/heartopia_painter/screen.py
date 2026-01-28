@@ -10,6 +10,12 @@ def get_screen_pixel_rgb(x: int, y: int) -> Tuple[int, int, int]:
     with mss.mss() as sct:
         monitor = {"left": x, "top": y, "width": 1, "height": 1}
         img = sct.grab(monitor)
-        # mss returns BGRA
-        b, g, r, _a = img.pixel(0, 0)
-        return (r, g, b)
+        # mss commonly returns BGRA, but some backends can return BGR.
+        px = img.pixel(0, 0)
+        if len(px) == 4:
+            b, g, r, _a = px
+        elif len(px) == 3:
+            b, g, r = px
+        else:
+            raise ValueError(f"Unexpected pixel format length: {len(px)}")
+        return (int(r), int(g), int(b))

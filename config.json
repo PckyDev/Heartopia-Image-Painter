@@ -7,7 +7,27 @@
     468,
     466
   ],
-  "shades_panel_button_pos": null,
-  "back_button_pos": null,
-  "main_colors": []
+  "shades_panel_button_pos": [
+    2514,
+    504
+  ],
+  "back_button_pos": [
+    2642,
+    339
+  ],
+  "main_colors": [
+    {
+      "name": "Black",
+      "pos": [
+        2582,
+        354
+      ],
+      "rgb": [
+        22,
+        22,
+        5
+      ],
+      "shades": []
+    }
+  ]
 }

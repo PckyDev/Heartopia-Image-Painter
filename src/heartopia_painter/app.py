@@ -8,10 +8,12 @@ from typing import Optional, Tuple
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from .capture import ClickCaptureResult, capture_next_left_click_with_color
+from dataclasses import dataclass
+
+from .screen import get_screen_pixel_rgb
 from .config import AppConfig, MainColor, ShadeButton, default_config_path, load_config, save_config
 from .image_processing import PixelGrid, load_and_resize_to_grid
-from .overlay import RectResult, RectSelectOverlay
+from .overlay import PointResult, PointSelectOverlay, RectResult, RectSelectOverlay
 from .paint import PainterOptions, paint_grid
 
 
@@ -24,6 +26,12 @@ CANVAS_PRESETS = {
 class LoadedImage:
     path: str
     grid: PixelGrid
+
+
+@dataclass
+class ClickCaptureResult:
+    pos: Tuple[int, int]
+    rgb: Tuple[int, int, int]
 
 
 class WorkerSignals(QtCore.QObject):
@@ -186,6 +194,10 @@ class MainWindow(QtWidgets.QMainWindow):
     def _save_cfg(self):
         save_config(self._config_path, self._cfg)
 
+    def _run_on_ui_thread(self, fn) -> None:
+        # QTimer.singleShot reliably queues work onto the Qt event loop.
+        QtCore.QTimer.singleShot(0, fn)
+
     def _confirm_capture(self, label: str, res: ClickCaptureResult):
         self.statusBar().showMessage(f"Captured {label} at {res.pos} rgb={res.rgb}", 5000)
         QtWidgets.QMessageBox.information(
@@ -195,17 +207,20 @@ class MainWindow(QtWidgets.QMainWindow):
         )
 
     def _capture_click_async(self, title: str, message: str, apply_capture):
-        """Shows a prompt, then captures the next left-click + sampled RGB."""
+        """Shows a prompt, then uses a fullscreen overlay to pick a point + sample RGB."""
         QtWidgets.QMessageBox.information(self, title, message)
 
-        def on_result(res: ClickCaptureResult):
-            QtCore.QMetaObject.invokeMethod(
-                self,
-                lambda: apply_capture(res),
-                QtCore.Qt.ConnectionType.QueuedConnection,
-            )
+        ov = PointSelectOverlay(instruction="Click the location on screen (ESC/right-click to cancel)")
+        self._point_overlay = ov  # keep alive
 
-        capture_next_left_click_with_color(on_result=on_result)
+        def on_sel(p: PointResult):
+            rgb = get_screen_pixel_rgb(int(p.x), int(p.y))
+            res = ClickCaptureResult(pos=(int(p.x), int(p.y)), rgb=rgb)
+            self._run_on_ui_thread(lambda: apply_capture(res))
+
+        ov.pointSelected.connect(on_sel)
+        ov.cancelled.connect(lambda: None)
+        ov.start()
 
     def _selected_preset_wh(self) -> Tuple[int, int]:
         key = self.cbo_preset.currentText()
@@ -267,20 +282,11 @@ class MainWindow(QtWidgets.QMainWindow):
         )
 
     def _capture_global_button(self, which: str):
-        QtWidgets.QMessageBox.information(
-            self,
+        self._capture_click_async(
             "Capture",
-            "After closing this dialog, click the button location in-game.",
+            "After closing this dialog, click the button location in-game (the click will NOT press it).",
+            lambda res: self._apply_global_button_capture(which, res),
         )
-
-        def on_result(res: ClickCaptureResult):
-            QtCore.QMetaObject.invokeMethod(
-                self,
-                lambda: self._apply_global_button_capture(which, res),
-                QtCore.Qt.ConnectionType.QueuedConnection,
-            )
-
-        capture_next_left_click_with_color(on_result=on_result)
 
     def _apply_global_button_capture(self, which: str, res: ClickCaptureResult):
         if which == "shades":
@@ -382,16 +388,31 @@ class MainWindow(QtWidgets.QMainWindow):
                 shades.append(sh)
                 lst.addItem(f"{shade_name} @ {res2.pos} rgb={res2.rgb}")
                 self.statusBar().showMessage(f"Captured {shade_name} at {res2.pos} rgb={res2.rgb}", 4000)
-            QtCore.QMetaObject.invokeMethod(
-                self, _add, QtCore.Qt.ConnectionType.QueuedConnection
-            )
+            self._run_on_ui_thread(_add)
 
         def arm_next():
             if not self._shade_capture_active:
                 return
-            capture_next_left_click_with_color(
-                on_result=lambda r: (add_shade_capture(r), arm_next()),
+
+            ov = PointSelectOverlay(
+                instruction="Click the next SHADE button location (ESC/right-click to cancel)"
             )
+            self._point_overlay = ov
+
+            def on_sel(p: PointResult):
+                rgb = get_screen_pixel_rgb(int(p.x), int(p.y))
+                r = ClickCaptureResult(pos=(int(p.x), int(p.y)), rgb=rgb)
+                add_shade_capture(r)
+                # Chain the next capture
+                self._run_on_ui_thread(arm_next)
+
+            def on_cancel():
+                # Just stop capturing more shades; user can hit Finish.
+                self.statusBar().showMessage("Shade capture cancelled (click Finish to save)", 5000)
+
+            ov.pointSelected.connect(on_sel)
+            ov.cancelled.connect(on_cancel)
+            ov.start()
 
         def finish():
             self._shade_capture_active = False
@@ -575,8 +596,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
 
 def run():
-    # Better DPI behavior on Windows
-    os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "1")
+    # Qt on Windows can emit a scary-but-harmless DPI awareness warning on some setups.
+    # Suppress that specific category to keep console output clean.
+    rules = os.environ.get("QT_LOGGING_RULES", "")
+    if "qt.qpa.window=false" not in rules:
+        os.environ["QT_LOGGING_RULES"] = (rules + (";" if rules else "") + "qt.qpa.window=false").strip(";")
 
     app = QtWidgets.QApplication([])
     w = MainWindow()
