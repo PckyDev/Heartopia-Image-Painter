@@ -140,6 +140,22 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setCentralWidget(root)
         layout = QtWidgets.QVBoxLayout(root)
 
+        tabs = QtWidgets.QTabWidget()
+        layout.addWidget(tabs)
+
+        tab_main = QtWidgets.QWidget()
+        tab_main_layout = QtWidgets.QVBoxLayout(tab_main)
+
+        tab_cfg = QtWidgets.QWidget()
+        tab_cfg_layout = QtWidgets.QVBoxLayout(tab_cfg)
+
+        tab_timing = QtWidgets.QWidget()
+        tab_timing_layout = QtWidgets.QVBoxLayout(tab_timing)
+
+        tabs.addTab(tab_main, "Main")
+        tabs.addTab(tab_cfg, "Color configuration")
+        tabs.addTab(tab_timing, "Timing / reliability")
+
         # Image load
         row1 = QtWidgets.QHBoxLayout()
         self.btn_load = QtWidgets.QPushButton("Import image…")
@@ -147,7 +163,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.lbl_image.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
         row1.addWidget(self.btn_load)
         row1.addWidget(self.lbl_image, 1)
-        layout.addLayout(row1)
+        tab_main_layout.addLayout(row1)
 
         # Preset / Precision / Part
         row2 = QtWidgets.QHBoxLayout()
@@ -170,14 +186,14 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.btn_select_canvas = QtWidgets.QPushButton("Select canvas area…")
         row2.addWidget(self.btn_select_canvas)
-        layout.addLayout(row2)
+        tab_main_layout.addLayout(row2)
 
         self.lbl_canvas = QtWidgets.QLabel("Canvas: not selected")
-        layout.addWidget(self.lbl_canvas)
+        tab_main_layout.addWidget(self.lbl_canvas)
 
         self.lbl_global_buttons = QtWidgets.QLabel("Palette buttons: not set")
         self.lbl_global_buttons.setWordWrap(True)
-        layout.addWidget(self.lbl_global_buttons)
+        tab_main_layout.addWidget(self.lbl_global_buttons)
 
         # Config
         cfg_group = QtWidgets.QGroupBox("Color configuration")
@@ -210,12 +226,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.lbl_cfg_hint.setWordWrap(True)
         cfg_layout.addWidget(self.lbl_cfg_hint)
 
-        layout.addWidget(cfg_group)
+        tab_cfg_layout.addWidget(cfg_group)
 
-        # Paint
-        paint_group = QtWidgets.QGroupBox("Paint")
-        paint_layout = QtWidgets.QVBoxLayout(paint_group)
+        tab_cfg_layout.addStretch(1)
 
+        # Timing / reliability (tab)
         timing = QtWidgets.QGroupBox("Timing / reliability")
         tlay = QtWidgets.QGridLayout(timing)
 
@@ -272,7 +287,13 @@ class MainWindow(QtWidgets.QMainWindow):
         tlay.addWidget(QtWidgets.QLabel("Verify max passes:"), 6, 2)
         tlay.addWidget(self.spin_verify_passes, 6, 3)
 
-        paint_layout.addWidget(timing)
+        tab_timing_layout.addWidget(timing)
+
+        tab_timing_layout.addStretch(1)
+
+        # Paint (main tab)
+        paint_group = QtWidgets.QGroupBox("Paint")
+        paint_layout = QtWidgets.QVBoxLayout(paint_group)
 
         rowm = QtWidgets.QHBoxLayout()
         rowm.addWidget(QtWidgets.QLabel("Method:"))
@@ -295,7 +316,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.progress.setValue(0)
         paint_layout.addWidget(self.progress)
 
-        layout.addWidget(paint_group)
+        tab_main_layout.addWidget(paint_group)
+
+        tab_main_layout.addStretch(1)
 
         # Wiring
         self.btn_load.clicked.connect(self._on_load)
