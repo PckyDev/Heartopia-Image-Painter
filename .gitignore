@@ -1,3 +1,4 @@
 *.af~lock~
 *.af~lock~
 config.json
+*.af~lock~

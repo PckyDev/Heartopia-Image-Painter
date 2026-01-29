@@ -84,6 +84,7 @@ def paint_grid(
     pyautogui.FAILSAFE = True  # moving mouse to top-left aborts
 
     last_main: Optional[MainColor] = None
+    last_shade: Optional[ShadeButton] = None
     in_shades_panel = False
 
     for y in range(grid_h):
@@ -109,6 +110,7 @@ def paint_grid(
                 _tap(cfg.shades_panel_button_pos, options, extra_delay_s=options.panel_open_delay_s)
                 in_shades_panel = True
                 last_main = main
+                last_shade = None
 
             # If something put us back on main palette, re-open shades panel.
             if not in_shades_panel:
@@ -116,7 +118,9 @@ def paint_grid(
                 in_shades_panel = True
 
             # Select shade
-            _tap(shade.pos, options, extra_delay_s=options.shade_select_delay_s)
+            if last_shade is None or shade.pos != last_shade.pos:
+                _tap(shade.pos, options, extra_delay_s=options.shade_select_delay_s)
+                last_shade = shade
 
             # Paint cell
             cx = int(x0 + (x + 0.5) * cell_w)
@@ -126,11 +130,9 @@ def paint_grid(
             if progress_cb:
                 progress_cb(x, y)
 
-        # Return to main palette each row (safer)
-        if in_shades_panel:
-            _tap(cfg.back_button_pos, options)
-            in_shades_panel = False
-        last_main = None
-
         if options.row_delay_s > 0:
             time.sleep(options.row_delay_s)
+
+    # Leave the game UI in a predictable state.
+    if in_shades_panel:
+        _tap(cfg.back_button_pos, options)
