@@ -80,6 +80,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._esc_listener = None
 
         self._stop_flag = False
+        # Paint session state (used for pause/resume)
+        self._paint_total: int = 0
+        self._paint_done: set[tuple[int, int]] = set()
+        self._paint_paused: bool = False
+        self._paint_session_sig: Optional[tuple] = None
 
         self._build_ui()
         self._apply_persisted_state()
@@ -324,9 +329,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
         rowp = QtWidgets.QHBoxLayout()
         self.btn_paint = QtWidgets.QPushButton("Paint now")
+        self.btn_resume = QtWidgets.QPushButton("Resume")
+        self.btn_resume.setEnabled(False)
         self.btn_stop = QtWidgets.QPushButton("Stop")
         self.btn_stop.setEnabled(False)
         rowp.addWidget(self.btn_paint)
+        rowp.addWidget(self.btn_resume)
         rowp.addWidget(self.btn_stop)
         paint_layout.addLayout(rowp)
 
@@ -351,6 +359,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_remove_color.clicked.connect(self._on_remove_selected_color)
         self.btn_fix_swap_rb.clicked.connect(self._on_fix_swap_rb)
         self.btn_paint.clicked.connect(self._on_paint)
+        self.btn_resume.clicked.connect(self._on_resume)
         self.btn_stop.clicked.connect(self._on_stop)
 
         self.cbo_preset.currentTextChanged.connect(self._on_preset_changed)
@@ -1000,51 +1009,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if not self._paint_countdown(seconds=3):
             return
 
-        self.btn_paint.setEnabled(False)
-        self.btn_stop.setEnabled(True)
-        self._stop_flag = False
-        self._start_esc_listener()
-
-        total = self._loaded.grid.w * self._loaded.grid.h
-
-        signals = WorkerSignals()
-        signals.progress.connect(lambda x, y: self._on_progress(x, y, total))
-        signals.finished.connect(self._on_paint_done)
-        signals.error.connect(self._on_paint_error)
-
-        def work():
-            try:
-                opts = PainterOptions(
-                    move_duration_s=self._cfg.move_duration_s,
-                    mouse_down_s=self._cfg.mouse_down_s,
-                    after_click_delay_s=self._cfg.after_click_delay_s,
-                    panel_open_delay_s=self._cfg.panel_open_delay_s,
-                    shade_select_delay_s=self._cfg.shade_select_delay_s,
-                    row_delay_s=self._cfg.row_delay_s,
-                    enable_drag_strokes=bool(getattr(self._cfg, "enable_drag_strokes", False)),
-                    drag_step_duration_s=float(getattr(self._cfg, "drag_step_duration_s", 0.01)),
-                    after_drag_delay_s=float(getattr(self._cfg, "after_drag_delay_s", 0.02)),
-                )
-
-                def get_pixel(x: int, y: int):
-                    return self._loaded.grid.get(x, y)
-
-                paint_grid(
-                    cfg=self._cfg,
-                    canvas_rect=self._canvas_rect,
-                    grid_w=self._loaded.grid.w,
-                    grid_h=self._loaded.grid.h,
-                    get_pixel=get_pixel,
-                    options=opts,
-                    paint_mode=self._cfg.paint_mode,
-                    progress_cb=lambda x, y: signals.progress.emit(x, y),
-                    should_stop=lambda: self._stop_flag,
-                )
-                signals.finished.emit()
-            except Exception as e:
-                signals.error.emit(str(e))
-
-        threading.Thread(target=work, daemon=True).start()
+        self._start_paint_worker(resume=False)
 
     def _paint_countdown(self, seconds: int = 3) -> bool:
         """Modal countdown before starting automation. Returns False if cancelled."""
@@ -1096,23 +1061,148 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_stop(self):
         self._stop_flag = True
         self._stop_esc_listener()
+    def _current_paint_session_sig(self) -> Optional[tuple]:
+        if self._loaded is None or self._canvas_rect is None:
+            return None
+        return (
+            self._loaded.path,
+            self._loaded.grid.w,
+            self._loaded.grid.h,
+            tuple(self._canvas_rect),
+            self._current_selection_key(),
+            str(getattr(self._cfg, "paint_mode", "row")),
+        )
+
+    def _reset_paint_session(self) -> None:
+        self._paint_total = 0
+        self._paint_done.clear()
+        self._paint_paused = False
+        self._paint_session_sig = None
+        self.btn_resume.setEnabled(False)
 
     def _on_progress(self, x: int, y: int, total: int):
-        idx = y * self._loaded.grid.w + x + 1
-        pct = int((idx / total) * 100)
+        # Progress callbacks can arrive out of order (Paint-by-Color) and can
+        # repeat due to verification repaints. Track unique completed cells.
+        if self._loaded is None:
+            return
+        if total > 0:
+            self._paint_total = int(total)
+        key = (int(x), int(y))
+        if key not in self._paint_done:
+            self._paint_done.add(key)
+
+        denom = max(1, int(self._paint_total) or int(total) or 1)
+        pct = int((len(self._paint_done) / denom) * 100)
         self.progress.setValue(max(0, min(100, pct)))
 
     def _on_paint_done(self):
         self.btn_paint.setEnabled(True)
+        self.btn_resume.setEnabled(False)
         self.btn_stop.setEnabled(False)
         self.progress.setValue(100)
         self._stop_esc_listener()
+        self._reset_paint_session()
 
     def _on_paint_error(self, msg: str):
         self.btn_paint.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self._stop_esc_listener()
-        QtWidgets.QMessageBox.critical(self, "Paint error", msg)
+
+        # Keep the session state so the user can tweak settings and resume.
+        self._paint_paused = True
+        self.btn_resume.setEnabled(True)
+        QtWidgets.QMessageBox.warning(
+            self,
+            "Paint paused",
+            "Painting hit an error and has been paused.\n\n"
+            "You can tweak timing/verification settings and press Resume to continue from the last completed step.\n\n"
+            f"Error: {msg}",
+        )
+
+    def _start_paint_worker(self, resume: bool) -> None:
+        if self._loaded is None or self._canvas_rect is None:
+            return
+
+        total = self._loaded.grid.w * self._loaded.grid.h
+        if not resume:
+            self._reset_paint_session()
+            self._paint_total = total
+            self._paint_session_sig = self._current_paint_session_sig()
+        else:
+            # Validate that the session hasn't changed.
+            cur_sig = self._current_paint_session_sig()
+            if self._paint_session_sig is None or cur_sig != self._paint_session_sig:
+                QtWidgets.QMessageBox.information(
+                    self,
+                    "Can't resume",
+                    "The image/canvas/preset changed since the last run.\n\nStart a new paint instead.",
+                )
+                self._reset_paint_session()
+                return
+
+        self.btn_paint.setEnabled(False)
+        self.btn_resume.setEnabled(False)
+        self.btn_stop.setEnabled(True)
+        self._stop_flag = False
+        self._start_esc_listener()
+
+        signals = WorkerSignals()
+        signals.progress.connect(lambda x, y: self._on_progress(x, y, total))
+        signals.finished.connect(self._on_paint_done)
+        signals.error.connect(self._on_paint_error)
+
+        def work():
+            try:
+                opts = PainterOptions(
+                    move_duration_s=self._cfg.move_duration_s,
+                    mouse_down_s=self._cfg.mouse_down_s,
+                    after_click_delay_s=self._cfg.after_click_delay_s,
+                    panel_open_delay_s=self._cfg.panel_open_delay_s,
+                    shade_select_delay_s=self._cfg.shade_select_delay_s,
+                    row_delay_s=self._cfg.row_delay_s,
+                    enable_drag_strokes=bool(getattr(self._cfg, "enable_drag_strokes", False)),
+                    drag_step_duration_s=float(getattr(self._cfg, "drag_step_duration_s", 0.01)),
+                    after_drag_delay_s=float(getattr(self._cfg, "after_drag_delay_s", 0.02)),
+                )
+
+                def get_pixel(x: int, y: int):
+                    return self._loaded.grid.get(x, y)
+
+                skip_fn = (lambda x, y: (int(x), int(y)) in self._paint_done) if resume else None
+
+                paint_grid(
+                    cfg=self._cfg,
+                    canvas_rect=self._canvas_rect,
+                    grid_w=self._loaded.grid.w,
+                    grid_h=self._loaded.grid.h,
+                    get_pixel=get_pixel,
+                    options=opts,
+                    paint_mode=self._cfg.paint_mode,
+                    skip=skip_fn,
+                    allow_bucket_fill=(not resume),
+                    progress_cb=lambda x, y: signals.progress.emit(x, y),
+                    should_stop=lambda: self._stop_flag,
+                )
+                signals.finished.emit()
+            except Exception as e:
+                signals.error.emit(str(e))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_resume(self) -> None:
+        if not self._paint_paused:
+            return
+        if self._loaded is None or self._canvas_rect is None:
+            return
+        if not self._paint_done:
+            return
+
+        # Short countdown to refocus the game window.
+        if not self._paint_countdown(seconds=2):
+            return
+
+        self._paint_paused = False
+        self._start_paint_worker(resume=True)
 
 
 def run():

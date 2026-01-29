@@ -507,6 +507,8 @@ def paint_grid(
     get_pixel: Callable[[int, int], RGB],
     options: Optional[PainterOptions] = None,
     paint_mode: str = "row",
+    skip: Optional[Callable[[int, int], bool]] = None,
+    allow_bucket_fill: bool = True,
     progress_cb: Optional[Callable[[int, int], None]] = None,
     should_stop: Optional[Callable[[], bool]] = None,
 ) -> None:
@@ -542,6 +544,8 @@ def paint_grid(
             grid_h=grid_h,
             get_pixel=get_pixel,
             options=options,
+            skip=skip,
+            allow_bucket_fill=allow_bucket_fill,
             progress_cb=progress_cb,
             should_stop=should_stop,
         )
@@ -564,13 +568,15 @@ def paint_grid(
     # Optional bucket-fill pre-pass: fill the entire canvas with the most-used shade,
     # then skip painting that shade in the per-pixel pass.
     bucket_key: Optional[Tuple[str, Point]] = None
-    if bool(getattr(cfg, "bucket_fill_enabled", False)):
+    if allow_bucket_fill and bool(getattr(cfg, "bucket_fill_enabled", False)):
         # Build usage counts.
         counts: Dict[Tuple[str, Point], Tuple[int, MainColor, ShadeButton]] = {}
         for yy in range(grid_h):
             for xx in range(grid_w):
                 if should_stop and should_stop():
                     return
+                if skip is not None and skip(xx, yy):
+                    continue
                 m = get_match(get_pixel(xx, yy))
                 if m is None:
                     continue
@@ -606,6 +612,12 @@ def paint_grid(
             if should_stop and should_stop():
                 return
 
+            if skip is not None and skip(x, y):
+                if progress_cb:
+                    progress_cb(x, y)
+                x += 1
+                continue
+
             rgb = get_pixel(x, y)
             match = get_match(rgb)
             if match is None:
@@ -624,6 +636,8 @@ def paint_grid(
             run_start = x
             run_end = x
             while run_end + 1 < grid_w:
+                if skip is not None and skip(run_end + 1, y):
+                    break
                 nxt = get_match(get_pixel(run_end + 1, y))
                 if nxt is None:
                     break
@@ -676,6 +690,9 @@ def paint_grid(
         # Verify the row after it's been attempted once.
         row_expected: List[Optional[Tuple[MainColor, ShadeButton]]] = [None] * grid_w
         for xx in range(grid_w):
+            if skip is not None and skip(xx, y):
+                row_expected[xx] = None
+                continue
             m = get_match(get_pixel(xx, y))
             row_expected[xx] = m
         _verify_and_repair_row(
@@ -705,6 +722,8 @@ def _paint_grid_by_color(
     grid_h: int,
     get_pixel: Callable[[int, int], RGB],
     options: PainterOptions,
+    skip: Optional[Callable[[int, int], bool]] = None,
+    allow_bucket_fill: bool = True,
     progress_cb: Optional[Callable[[int, int], None]] = None,
     should_stop: Optional[Callable[[], bool]] = None,
 ) -> None:
@@ -739,6 +758,8 @@ def _paint_grid_by_color(
         for x in range(grid_w):
             if should_stop and should_stop():
                 return
+            if skip is not None and skip(x, y):
+                continue
             rgb = get_pixel(x, y)
             match = get_match(rgb)
             if match is None:
@@ -758,7 +779,7 @@ def _paint_grid_by_color(
     # Optional bucket-fill: fill entire canvas with the most-used shade and then
     # skip painting that shade.
     bucket_key: Optional[Tuple[str, Point]] = None
-    if bool(getattr(cfg, "bucket_fill_enabled", False)) and ordered:
+    if allow_bucket_fill and bool(getattr(cfg, "bucket_fill_enabled", False)) and ordered:
         main0, shade0, coords0 = ordered[0]
         min_cells = max(0, int(getattr(cfg, "bucket_fill_min_cells", 50)))
         if len(coords0) >= min_cells:
