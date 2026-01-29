@@ -1,4 +1,48 @@
 {
+<<<<<<< Updated upstream
+=======
+  "canvas_preset": "1:1 (30x30)",
+  "last_image_path": "D:/Desktop/CreatorsCamp/Icon/Gradient Transparent.png",
+  "last_canvas_rect": [
+    1672,
+    346,
+    468,
+    467
+  ],
+  "last_image_path_by_key": {
+    "1:1 (30x30)": "D:/Desktop/CreatorsCamp/Icon/Gradient Transparent.png",
+    "T-Shirt::Front": "D:/Desktop/Pocky/GitHub Repos/Heartopia-Image-Painter/design templates/T-Shirt/CreatorsCamp T-Shirt/Front.png"
+  },
+  "last_canvas_rect_by_key": {
+    "1:1 (30x30)": [
+      1672,
+      346,
+      468,
+      467
+    ],
+    "T-Shirt::Front": [
+      1719,
+      345,
+      373,
+      468
+    ]
+  },
+  "tshirt_part": "Front",
+  "move_duration_s": 0.03,
+  "mouse_down_s": 0.02,
+  "after_click_delay_s": 0.03,
+  "panel_open_delay_s": 0.12,
+  "shade_select_delay_s": 0.06,
+  "row_delay_s": 0.05,
+  "shades_panel_button_pos": [
+    2514,
+    504
+  ],
+  "back_button_pos": [
+    2642,
+    339
+  ],
+>>>>>>> Stashed changes
   "main_colors": [
     {
       "name": "Black",
