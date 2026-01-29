@@ -70,9 +70,17 @@ class AppConfig:
     # - "color": group by shade and paint one shade at a time
     paint_mode: str = "row"
 
+    # Optional speed-up: bucket-fill the most used shade first.
+    bucket_fill_enabled: bool = False
+    bucket_fill_min_cells: int = 50
+
     # Buttons that are global (same regardless of which color is selected)
     shades_panel_button_pos: Optional[Point] = None
     back_button_pos: Optional[Point] = None
+
+    # Tool buttons
+    paint_tool_button_pos: Optional[Point] = None
+    bucket_tool_button_pos: Optional[Point] = None
 
     main_colors: List[MainColor] = field(default_factory=list)
 
@@ -195,6 +203,15 @@ class AppConfig:
             cfg.paint_mode = cfg.paint_mode
         cfg.shades_panel_button_pos = to_tuple2(data.get("shades_panel_button_pos"))
         cfg.back_button_pos = to_tuple2(data.get("back_button_pos"))
+
+        cfg.bucket_fill_enabled = bool(data.get("bucket_fill_enabled", cfg.bucket_fill_enabled))
+        try:
+            cfg.bucket_fill_min_cells = int(data.get("bucket_fill_min_cells", cfg.bucket_fill_min_cells))
+        except Exception:
+            pass
+
+        cfg.paint_tool_button_pos = to_tuple2(data.get("paint_tool_button_pos"))
+        cfg.bucket_tool_button_pos = to_tuple2(data.get("bucket_tool_button_pos"))
 
         cfg.main_colors = []
         for mc in data.get("main_colors", []):

@@ -235,6 +235,65 @@ def _select_shade(
     return last_main, last_shade, in_shades_panel
 
 
+def _bucket_fill_canvas_with_shade(
+    cfg: AppConfig,
+    canvas_rect: Tuple[int, int, int, int],
+    grid_w: int,
+    grid_h: int,
+    main: MainColor,
+    shade: ShadeButton,
+    options: PainterOptions,
+    should_stop: Optional[Callable[[], bool]] = None,
+) -> None:
+    """Bucket fill the entire canvas with the given shade.
+
+    Requires captured tool buttons: paint tool + bucket tool.
+    """
+
+    if cfg.paint_tool_button_pos is None or cfg.bucket_tool_button_pos is None:
+        raise RuntimeError(
+            "Bucket fill is enabled but tool button positions are not set. "
+            "Capture 'paint tool button' and 'bucket tool button' first."
+        )
+
+    # Ensure we're in a consistent UI state while picking the shade.
+    _tap(cfg.paint_tool_button_pos, options)
+
+    last_main: Optional[MainColor] = None
+    last_shade: Optional[ShadeButton] = None
+    in_shades_panel = False
+    last_main, last_shade, in_shades_panel = _select_shade(
+        cfg=cfg,
+        options=options,
+        main=main,
+        shade=shade,
+        last_main=last_main,
+        last_shade=last_shade,
+        in_shades_panel=in_shades_panel,
+    )
+    if in_shades_panel:
+        _tap(cfg.back_button_pos, options)
+
+    if should_stop and should_stop():
+        return
+
+    # Switch to bucket tool and fill inside the canvas.
+    _tap(cfg.bucket_tool_button_pos, options)
+
+    x0, y0, w, h = canvas_rect
+    # Click near the center of the canvas to fill it.
+    fill_pt = (int(x0 + w * 0.5), int(y0 + h * 0.5))
+    _tap(fill_pt, options)
+
+    # Switch back to paint tool so subsequent pixel painting works as expected.
+    _tap(cfg.paint_tool_button_pos, options)
+
+    # Tiny settle helps some games register the fill.
+    settle_s = max(0.0, float(getattr(cfg, "verify_settle_s", 0.05)))
+    if settle_s > 0:
+        time.sleep(settle_s)
+
+
 def _verify_and_repair_row(
     cfg: AppConfig,
     canvas_rect: Tuple[int, int, int, int],
@@ -502,6 +561,45 @@ def paint_grid(
         match_cache[rgb] = m
         return m
 
+    # Optional bucket-fill pre-pass: fill the entire canvas with the most-used shade,
+    # then skip painting that shade in the per-pixel pass.
+    bucket_key: Optional[Tuple[str, Point]] = None
+    if bool(getattr(cfg, "bucket_fill_enabled", False)):
+        # Build usage counts.
+        counts: Dict[Tuple[str, Point], Tuple[int, MainColor, ShadeButton]] = {}
+        for yy in range(grid_h):
+            for xx in range(grid_w):
+                if should_stop and should_stop():
+                    return
+                m = get_match(get_pixel(xx, yy))
+                if m is None:
+                    continue
+                mc, sh = m
+                k = (mc.name, sh.pos)
+                if k not in counts:
+                    counts[k] = (0, mc, sh)
+                counts[k] = (counts[k][0] + 1, counts[k][1], counts[k][2])
+
+        if counts:
+            bucket_key, (bucket_n, bucket_main, bucket_shade) = max(
+                ((k, v) for (k, v) in counts.items()),
+                key=lambda kv: kv[1][0],
+            )
+            min_cells = max(0, int(getattr(cfg, "bucket_fill_min_cells", 50)))
+            if bucket_n < min_cells:
+                bucket_key = None
+            else:
+                _bucket_fill_canvas_with_shade(
+                    cfg=cfg,
+                    canvas_rect=canvas_rect,
+                    grid_w=grid_w,
+                    grid_h=grid_h,
+                    main=bucket_main,
+                    shade=bucket_shade,
+                    options=options,
+                    should_stop=should_stop,
+                )
+
     for y in range(grid_h):
         x = 0
         while x < grid_w:
@@ -514,6 +612,13 @@ def paint_grid(
                 x += 1
                 continue
             main, shade = match
+
+            if bucket_key is not None and (main.name, shade.pos) == bucket_key:
+                # Already bucket-filled.
+                if progress_cb:
+                    progress_cb(x, y)
+                x += 1
+                continue
 
             # Find run of adjacent same-shade pixels to potentially stroke.
             run_start = x
@@ -650,6 +755,29 @@ def _paint_grid_by_color(
         key=lambda t: (-len(t[2]), t[0].name, t[1].pos[0], t[1].pos[1]),
     )
 
+    # Optional bucket-fill: fill entire canvas with the most-used shade and then
+    # skip painting that shade.
+    bucket_key: Optional[Tuple[str, Point]] = None
+    if bool(getattr(cfg, "bucket_fill_enabled", False)) and ordered:
+        main0, shade0, coords0 = ordered[0]
+        min_cells = max(0, int(getattr(cfg, "bucket_fill_min_cells", 50)))
+        if len(coords0) >= min_cells:
+            _bucket_fill_canvas_with_shade(
+                cfg=cfg,
+                canvas_rect=canvas_rect,
+                grid_w=grid_w,
+                grid_h=grid_h,
+                main=main0,
+                shade=shade0,
+                options=options,
+                should_stop=should_stop,
+            )
+            bucket_key = (main0.name, shade0.pos)
+            # Mark these pixels as complete for progress purposes.
+            if progress_cb:
+                for xx, yy in coords0:
+                    progress_cb(xx, yy)
+
     last_main: Optional[MainColor] = None
     last_shade: Optional[ShadeButton] = None
     in_shades_panel = False
@@ -657,6 +785,9 @@ def _paint_grid_by_color(
     for main, shade, coords in ordered:
         if should_stop and should_stop():
             return
+
+        if bucket_key is not None and (main.name, shade.pos) == bucket_key:
+            continue
 
         # Use the unified selection logic (includes retries + UI sanity check).
         last_main, last_shade, in_shades_panel = _select_shade(

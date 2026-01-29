@@ -208,6 +208,13 @@ class MainWindow(QtWidgets.QMainWindow):
         row_cfg1.addWidget(self.btn_show_main_overlay)
         cfg_layout.addLayout(row_cfg1)
 
+        row_cfg_tools = QtWidgets.QHBoxLayout()
+        self.btn_set_paint_tool = QtWidgets.QPushButton("Set paint tool button")
+        self.btn_set_bucket_tool = QtWidgets.QPushButton("Set bucket tool button")
+        row_cfg_tools.addWidget(self.btn_set_paint_tool)
+        row_cfg_tools.addWidget(self.btn_set_bucket_tool)
+        cfg_layout.addLayout(row_cfg_tools)
+
         row_cfg2 = QtWidgets.QHBoxLayout()
         self.btn_add_color = QtWidgets.QPushButton("Setup new color…")
         self.btn_remove_color = QtWidgets.QPushButton("Remove selected")
@@ -303,6 +310,18 @@ class MainWindow(QtWidgets.QMainWindow):
         rowm.addStretch(1)
         paint_layout.addLayout(rowm)
 
+        row_bucket = QtWidgets.QHBoxLayout()
+        self.chk_bucket_fill = QtWidgets.QCheckBox("Bucket-fill most-used color first")
+        self.spin_bucket_min = QtWidgets.QSpinBox()
+        self.spin_bucket_min.setRange(0, 100000)
+        self.spin_bucket_min.setSingleStep(10)
+        self.spin_bucket_min.setSuffix(" min cells")
+        row_bucket.addWidget(self.chk_bucket_fill)
+        row_bucket.addStretch(1)
+        row_bucket.addWidget(QtWidgets.QLabel("Threshold:"))
+        row_bucket.addWidget(self.spin_bucket_min)
+        paint_layout.addLayout(row_bucket)
+
         rowp = QtWidgets.QHBoxLayout()
         self.btn_paint = QtWidgets.QPushButton("Paint now")
         self.btn_stop = QtWidgets.QPushButton("Stop")
@@ -326,6 +345,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_set_shades_button.clicked.connect(lambda: self._capture_global_button("shades"))
         self.btn_set_back_button.clicked.connect(lambda: self._capture_global_button("back"))
         self.btn_show_main_overlay.clicked.connect(self._on_toggle_main_color_overlay)
+        self.btn_set_paint_tool.clicked.connect(lambda: self._capture_global_button("paint_tool"))
+        self.btn_set_bucket_tool.clicked.connect(lambda: self._capture_global_button("bucket_tool"))
         self.btn_add_color.clicked.connect(self._on_setup_new_color)
         self.btn_remove_color.clicked.connect(self._on_remove_selected_color)
         self.btn_fix_swap_rb.clicked.connect(self._on_fix_swap_rb)
@@ -337,6 +358,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.cbo_part.currentTextChanged.connect(self._on_part_changed)
 
         self.cbo_paint_mode.currentTextChanged.connect(self._on_paint_mode_changed)
+
+        self.chk_bucket_fill.stateChanged.connect(lambda _v: self._on_bucket_fill_changed())
+        self.spin_bucket_min.valueChanged.connect(lambda _v: self._on_bucket_fill_changed())
 
         self.spin_move.valueChanged.connect(self._on_timing_changed)
         self.spin_down.valueChanged.connect(self._on_timing_changed)
@@ -449,6 +473,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.chk_verify.blockSignals(True)
         self.spin_verify_tol.blockSignals(True)
         self.spin_verify_passes.blockSignals(True)
+        self.chk_bucket_fill.blockSignals(True)
+        self.spin_bucket_min.blockSignals(True)
 
         self.spin_move.setValue(to_ms(self._cfg.move_duration_s))
         self.spin_down.setValue(to_ms(self._cfg.mouse_down_s))
@@ -465,12 +491,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self.spin_verify_tol.setValue(int(getattr(self._cfg, "verify_tolerance", 35)))
         self.spin_verify_passes.setValue(int(getattr(self._cfg, "verify_max_passes", 10)))
 
+        self.chk_bucket_fill.setChecked(bool(getattr(self._cfg, "bucket_fill_enabled", False)))
+        self.spin_bucket_min.setValue(int(getattr(self._cfg, "bucket_fill_min_cells", 50)))
+
         for w in widgets:
             w.blockSignals(False)
         self.chk_drag.blockSignals(False)
         self.chk_verify.blockSignals(False)
         self.spin_verify_tol.blockSignals(False)
         self.spin_verify_passes.blockSignals(False)
+        self.chk_bucket_fill.blockSignals(False)
+        self.spin_bucket_min.blockSignals(False)
 
     def _on_timing_changed(self, _value: int):
         # Persist timing settings immediately
@@ -495,6 +526,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._cfg.verify_max_passes = int(self.spin_verify_passes.value())
         self._save_cfg()
 
+    def _on_bucket_fill_changed(self) -> None:
+        self._cfg.bucket_fill_enabled = bool(self.chk_bucket_fill.isChecked())
+        self._cfg.bucket_fill_min_cells = int(self.spin_bucket_min.value())
+        self._save_cfg()
+
     def _refresh_config_view(self):
         self.lst_colors.clear()
         for mc in self._cfg.main_colors:
@@ -515,9 +551,15 @@ class MainWindow(QtWidgets.QMainWindow):
 
         sp = self._cfg.shades_panel_button_pos
         bp = self._cfg.back_button_pos
+        pp = getattr(self._cfg, "paint_tool_button_pos", None)
+        bk = getattr(self._cfg, "bucket_tool_button_pos", None)
         sp_txt = f"{sp}" if sp is not None else "(not set)"
         bp_txt = f"{bp}" if bp is not None else "(not set)"
-        self.lbl_global_buttons.setText(f"Palette buttons — Shades panel: {sp_txt} | Back: {bp_txt}")
+        pp_txt = f"{pp}" if pp is not None else "(not set)"
+        bk_txt = f"{bk}" if bk is not None else "(not set)"
+        self.lbl_global_buttons.setText(
+            f"Palette buttons — Shades panel: {sp_txt} | Back: {bp_txt} | Paint tool: {pp_txt} | Bucket: {bk_txt}"
+        )
 
     def _save_cfg(self):
         save_config(self._config_path, self._cfg)
@@ -690,6 +732,12 @@ class MainWindow(QtWidgets.QMainWindow):
         elif which == "back":
             self._cfg.back_button_pos = res.pos
             self._confirm_capture("back button", res)
+        elif which == "paint_tool":
+            self._cfg.paint_tool_button_pos = res.pos
+            self._confirm_capture("paint tool button", res)
+        elif which == "bucket_tool":
+            self._cfg.bucket_tool_button_pos = res.pos
+            self._confirm_capture("bucket tool button", res)
         self._save_cfg()
         self._refresh_config_view()
 

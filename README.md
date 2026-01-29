@@ -14,6 +14,7 @@ This app uses on-screen overlays for picking points/areas and uses mouse automat
 - On-screen **canvas area selection** with translucent preview
 - Guided **palette setup wizard** (captures button positions and samples their RGB)
 - Adjustable **timing / reliability** controls (useful if clicks don’t register)
+- Optional **bucket-fill most-used color** speed boost (requires capturing Paint tool + Bucket tool button positions)
 - Multi-part **T-Shirt** preset (each part remembers its own image + canvas area)
 - Persistent settings saved to `config.json`
 
@@ -44,9 +45,12 @@ From the repo folder:
 
 ## Presets
 
-| Preset | Part | Size |
+| Preset | Part / Precision | Size |
 |---|---|---:|
-| 1:1 | (single) | 30×30 |
+| 1:1 | Small | 30×30 |
+| 1:1 | Medium | 50×50 |
+| 1:1 | Big | 100×100 |
+| 1:1 | Super Large | 150×150 |
 | T-Shirt | Front | 64×80 |
 | T-Shirt | Back | 64×80 |
 | T-Shirt | Left Sleeve | 64×48 |
@@ -64,6 +68,9 @@ From the repo folder:
 	- Scroll the mouse wheel to enable/adjust a small zoom window near your cursor for precise alignment.
 6. Set up your palette (one time per palette layout):
 	- Click **Setup new color…** and follow the prompts.
+		- If you want to use the bucket-fill speed boost, also capture:
+			- **Set paint tool button**
+			- **Set bucket tool button**
 7. (Optional) Adjust timing values under **Timing / reliability**.
 8. Click **Paint now**.
 
@@ -94,6 +101,7 @@ Notes:
 Speed tip:
 
 - Enable **Stroke neighbors (rapid clicks)** to paint adjacent pixels with faster per-pixel clicking (often much faster on large solid areas).
+- Enable **Bucket-fill most-used color first** to fill the entire canvas with the most common shade, then paint the remaining colors normally.
 
 ## Safety
 
