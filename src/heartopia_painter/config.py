@@ -28,8 +28,11 @@ class MainColor:
 
 @dataclass
 class AppConfig:
-    # Store the UI preset key (e.g. "1:1 (30x30)") so it can be restored on startup.
-    canvas_preset: str = "1:1 (30x30)"
+    # Store the UI preset key (e.g. "1:1" or "T-Shirt") so it can be restored on startup.
+    canvas_preset: str = "1:1"
+
+    # For 1:1 preset
+    one_to_one_precision: str = "Small"
 
     # Convenience: restore last session state
     last_image_path: Optional[str] = None
@@ -95,11 +98,22 @@ class AppConfig:
             return out
 
         cfg = AppConfig()
-        preset = data.get("canvas_preset", "1:1 (30x30)")
-        # Backward compatibility with early configs that stored "30x30".
-        if preset == "30x30":
-            preset = "1:1 (30x30)"
-        cfg.canvas_preset = str(preset)
+        preset_raw = data.get("canvas_preset", "1:1")
+        preset_raw = str(preset_raw)
+
+        # Backward compatibility:
+        # - early configs stored "30x30"
+        # - later configs stored "1:1 (30x30)"
+        if preset_raw == "30x30":
+            cfg.canvas_preset = "1:1"
+            cfg.one_to_one_precision = "Small"
+        elif preset_raw.startswith("1:1") and "(" in preset_raw and "30x30" in preset_raw:
+            cfg.canvas_preset = "1:1"
+            cfg.one_to_one_precision = "Small"
+        else:
+            cfg.canvas_preset = preset_raw
+
+        cfg.one_to_one_precision = str(data.get("one_to_one_precision", cfg.one_to_one_precision))
 
         cfg.last_image_path = data.get("last_image_path")
         if cfg.last_image_path is not None:
@@ -111,11 +125,18 @@ class AppConfig:
 
         cfg.tshirt_part = str(data.get("tshirt_part", cfg.tshirt_part))
 
-        # Migrate legacy single-value fields into the per-key maps if maps are empty.
-        if cfg.last_image_path and "1:1 (30x30)" not in cfg.last_image_path_by_key:
-            cfg.last_image_path_by_key["1:1 (30x30)"] = cfg.last_image_path
-        if cfg.last_canvas_rect and "1:1 (30x30)" not in cfg.last_canvas_rect_by_key:
-            cfg.last_canvas_rect_by_key["1:1 (30x30)"] = cfg.last_canvas_rect
+        # Migrate older per-key naming schemes to the new keys.
+        # Old: "1:1 (30x30)" -> New: "1:1::Small"
+        if "1:1 (30x30)" in cfg.last_image_path_by_key and "1:1::Small" not in cfg.last_image_path_by_key:
+            cfg.last_image_path_by_key["1:1::Small"] = cfg.last_image_path_by_key["1:1 (30x30)"]
+        if "1:1 (30x30)" in cfg.last_canvas_rect_by_key and "1:1::Small" not in cfg.last_canvas_rect_by_key:
+            cfg.last_canvas_rect_by_key["1:1::Small"] = cfg.last_canvas_rect_by_key["1:1 (30x30)"]
+
+        # Migrate legacy single-value fields into the per-key maps.
+        if cfg.last_image_path and "1:1::Small" not in cfg.last_image_path_by_key:
+            cfg.last_image_path_by_key["1:1::Small"] = cfg.last_image_path
+        if cfg.last_canvas_rect and "1:1::Small" not in cfg.last_canvas_rect_by_key:
+            cfg.last_canvas_rect_by_key["1:1::Small"] = cfg.last_canvas_rect
 
         def to_float(v, default: float) -> float:
             try:

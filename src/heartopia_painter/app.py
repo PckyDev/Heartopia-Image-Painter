@@ -15,10 +15,14 @@ from .overlay import PointResult, PointSelectOverlay, RectResult, RectSelectOver
 from .paint import PainterOptions, paint_grid
 
 
+ONE_TO_ONE_PRESET_NAME = "1:1"
 TSHIRT_PRESET_NAME = "T-Shirt"
 
-SINGLE_PRESETS: dict[str, Tuple[int, int]] = {
-    "1:1 (30x30)": (30, 30),
+ONE_TO_ONE_PRECISIONS: dict[str, Tuple[int, int]] = {
+    "Small": (30, 30),
+    "Medium": (50, 50),
+    "Big": (100, 100),
+    "Super Large": (150, 150),
 }
 
 TSHIRT_PARTS: dict[str, Tuple[int, int]] = {
@@ -29,9 +33,12 @@ TSHIRT_PARTS: dict[str, Tuple[int, int]] = {
 }
 
 
-def selection_key(preset: str, part: Optional[str]) -> str:
+def selection_key(preset: str, variant: Optional[str]) -> str:
+    if preset == ONE_TO_ONE_PRESET_NAME:
+        precision = variant or "Small"
+        return f"{preset}::{precision}"
     if preset == TSHIRT_PRESET_NAME:
-        return f"{preset}::{part or 'Front'}"
+        return f"{preset}::{variant or 'Front'}"
     return preset
 
 
@@ -88,12 +95,18 @@ class MainWindow(QtWidgets.QMainWindow):
         row1.addWidget(self.lbl_image, 1)
         layout.addLayout(row1)
 
-        # Preset / Part
+        # Preset / Precision / Part
         row2 = QtWidgets.QHBoxLayout()
         row2.addWidget(QtWidgets.QLabel("Canvas preset:"))
         self.cbo_preset = QtWidgets.QComboBox()
-        self.cbo_preset.addItems([*SINGLE_PRESETS.keys(), TSHIRT_PRESET_NAME])
+        self.cbo_preset.addItems([ONE_TO_ONE_PRESET_NAME, TSHIRT_PRESET_NAME])
         row2.addWidget(self.cbo_preset, 1)
+
+        self.lbl_precision = QtWidgets.QLabel("Precision:")
+        self.cbo_precision = QtWidgets.QComboBox()
+        self.cbo_precision.addItems(list(ONE_TO_ONE_PRECISIONS.keys()))
+        row2.addWidget(self.lbl_precision)
+        row2.addWidget(self.cbo_precision)
 
         self.lbl_part = QtWidgets.QLabel("Part:")
         self.cbo_part = QtWidgets.QComboBox()
@@ -206,6 +219,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_stop.clicked.connect(self._on_stop)
 
         self.cbo_preset.currentTextChanged.connect(self._on_preset_changed)
+        self.cbo_precision.currentTextChanged.connect(self._on_precision_changed)
         self.cbo_part.currentTextChanged.connect(self._on_part_changed)
 
         self.spin_move.valueChanged.connect(self._on_timing_changed)
@@ -220,11 +234,18 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._cfg.canvas_preset and self.cbo_preset.findText(self._cfg.canvas_preset) >= 0:
             self.cbo_preset.setCurrentText(self._cfg.canvas_preset)
 
+        # Restore 1:1 precision
+        if (
+            getattr(self._cfg, "one_to_one_precision", None)
+            and self.cbo_precision.findText(self._cfg.one_to_one_precision) >= 0
+        ):
+            self.cbo_precision.setCurrentText(self._cfg.one_to_one_precision)
+
         # Restore T-Shirt part
         if self._cfg.tshirt_part and self.cbo_part.findText(self._cfg.tshirt_part) >= 0:
             self.cbo_part.setCurrentText(self._cfg.tshirt_part)
 
-        self._update_part_ui_visibility()
+        self._update_variant_ui_visibility()
 
         # Restore per-selection state (image + canvas)
         self._restore_selection_state()
@@ -278,7 +299,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
         preset = self.cbo_preset.currentText()
         part_txt = ""
-        if preset == TSHIRT_PRESET_NAME:
+        if preset == ONE_TO_ONE_PRESET_NAME:
+            part_txt = f" — {self.cbo_precision.currentText()}"
+        elif preset == TSHIRT_PRESET_NAME:
             part_txt = f" — {self.cbo_part.currentText()}"
 
         if self._canvas_rect is None:
@@ -326,18 +349,31 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _selected_preset_wh(self) -> Tuple[int, int]:
         preset = self.cbo_preset.currentText()
+        if preset == ONE_TO_ONE_PRESET_NAME:
+            precision = self.cbo_precision.currentText() or self._cfg.one_to_one_precision or "Small"
+            return ONE_TO_ONE_PRECISIONS.get(precision, ONE_TO_ONE_PRECISIONS["Small"])
         if preset == TSHIRT_PRESET_NAME:
             part = self.cbo_part.currentText() or self._cfg.tshirt_part or "Front"
             return TSHIRT_PARTS.get(part, TSHIRT_PARTS["Front"])
-        return SINGLE_PRESETS.get(preset, (30, 30))
+        return (30, 30)
 
     def _current_selection_key(self) -> str:
         preset = self.cbo_preset.currentText()
-        part = self.cbo_part.currentText() if preset == TSHIRT_PRESET_NAME else None
-        return selection_key(preset, part)
+        if preset == ONE_TO_ONE_PRESET_NAME:
+            precision = self.cbo_precision.currentText() or self._cfg.one_to_one_precision or "Small"
+            return selection_key(preset, precision)
+        if preset == TSHIRT_PRESET_NAME:
+            part = self.cbo_part.currentText() if preset == TSHIRT_PRESET_NAME else None
+            return selection_key(preset, part)
+        return selection_key(preset, None)
 
-    def _update_part_ui_visibility(self) -> None:
-        is_tshirt = self.cbo_preset.currentText() == TSHIRT_PRESET_NAME
+    def _update_variant_ui_visibility(self) -> None:
+        preset = self.cbo_preset.currentText()
+        is_one_to_one = preset == ONE_TO_ONE_PRESET_NAME
+        is_tshirt = preset == TSHIRT_PRESET_NAME
+
+        self.lbl_precision.setVisible(is_one_to_one)
+        self.cbo_precision.setVisible(is_one_to_one)
         self.lbl_part.setVisible(is_tshirt)
         self.cbo_part.setVisible(is_tshirt)
 
@@ -396,6 +432,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._cfg.last_image_path_by_key[sel_key] = path
         self._cfg.last_image_path = path
         self._cfg.canvas_preset = self.cbo_preset.currentText()
+        if self.cbo_preset.currentText() == ONE_TO_ONE_PRESET_NAME:
+            self._cfg.one_to_one_precision = self.cbo_precision.currentText() or self._cfg.one_to_one_precision
         if self.cbo_preset.currentText() == TSHIRT_PRESET_NAME:
             self._cfg.tshirt_part = self.cbo_part.currentText() or self._cfg.tshirt_part
         self._save_cfg()
@@ -454,9 +492,18 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_preset_changed(self, _text: str):
         self._cfg.canvas_preset = self.cbo_preset.currentText()
-        self._update_part_ui_visibility()
+        self._update_variant_ui_visibility()
+        if self.cbo_preset.currentText() == ONE_TO_ONE_PRESET_NAME:
+            self._cfg.one_to_one_precision = self.cbo_precision.currentText() or self._cfg.one_to_one_precision
         if self.cbo_preset.currentText() == TSHIRT_PRESET_NAME:
             self._cfg.tshirt_part = self.cbo_part.currentText() or self._cfg.tshirt_part
+        self._save_cfg()
+        self._restore_selection_state()
+
+    def _on_precision_changed(self, _text: str):
+        if self.cbo_preset.currentText() != ONE_TO_ONE_PRESET_NAME:
+            return
+        self._cfg.one_to_one_precision = self.cbo_precision.currentText() or self._cfg.one_to_one_precision
         self._save_cfg()
         self._restore_selection_state()
 
