@@ -230,6 +230,14 @@ class MainWindow(QtWidgets.QMainWindow):
 
         paint_layout.addWidget(timing)
 
+        rowm = QtWidgets.QHBoxLayout()
+        rowm.addWidget(QtWidgets.QLabel("Method:"))
+        self.cbo_paint_mode = QtWidgets.QComboBox()
+        self.cbo_paint_mode.addItems(["Paint by Row", "Paint by Color"])
+        rowm.addWidget(self.cbo_paint_mode)
+        rowm.addStretch(1)
+        paint_layout.addLayout(rowm)
+
         rowp = QtWidgets.QHBoxLayout()
         self.btn_paint = QtWidgets.QPushButton("Paint now")
         self.btn_stop = QtWidgets.QPushButton("Stop")
@@ -259,6 +267,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.cbo_preset.currentTextChanged.connect(self._on_preset_changed)
         self.cbo_precision.currentTextChanged.connect(self._on_precision_changed)
         self.cbo_part.currentTextChanged.connect(self._on_part_changed)
+
+        self.cbo_paint_mode.currentTextChanged.connect(self._on_paint_mode_changed)
 
         self.spin_move.valueChanged.connect(self._on_timing_changed)
         self.spin_down.valueChanged.connect(self._on_timing_changed)
@@ -290,6 +300,26 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Restore timing controls
         self._sync_timing_ui_from_cfg()
+
+        # Restore paint mode
+        self._sync_paint_mode_ui_from_cfg()
+
+    def _sync_paint_mode_ui_from_cfg(self) -> None:
+        # Block signals so we don't save during startup.
+        self.cbo_paint_mode.blockSignals(True)
+        try:
+            pm = (getattr(self._cfg, "paint_mode", "row") or "row").strip().lower()
+            if pm == "color":
+                self.cbo_paint_mode.setCurrentText("Paint by Color")
+            else:
+                self.cbo_paint_mode.setCurrentText("Paint by Row")
+        finally:
+            self.cbo_paint_mode.blockSignals(False)
+
+    def _on_paint_mode_changed(self, _text: str) -> None:
+        txt = self.cbo_paint_mode.currentText().strip().lower()
+        self._cfg.paint_mode = "color" if "color" in txt else "row"
+        self._save_cfg()
 
     def _sync_timing_ui_from_cfg(self):
         def to_ms(v: float) -> int:
@@ -820,6 +850,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     grid_h=self._loaded.grid.h,
                     get_pixel=get_pixel,
                     options=opts,
+                    paint_mode=self._cfg.paint_mode,
                     progress_cb=lambda x, y: signals.progress.emit(x, y),
                     should_stop=lambda: self._stop_flag,
                 )

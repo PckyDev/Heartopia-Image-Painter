@@ -53,6 +53,11 @@ class AppConfig:
     shade_select_delay_s: float = 0.06
     row_delay_s: float = 0.10
 
+    # Painting mode
+    # - "row": iterate pixels in row/column order
+    # - "color": group by shade and paint one shade at a time
+    paint_mode: str = "row"
+
     # Buttons that are global (same regardless of which color is selected)
     shades_panel_button_pos: Optional[Point] = None
     back_button_pos: Optional[Point] = None
@@ -150,6 +155,17 @@ class AppConfig:
         cfg.panel_open_delay_s = to_float(data.get("panel_open_delay_s"), cfg.panel_open_delay_s)
         cfg.shade_select_delay_s = to_float(data.get("shade_select_delay_s"), cfg.shade_select_delay_s)
         cfg.row_delay_s = to_float(data.get("row_delay_s"), cfg.row_delay_s)
+
+        pm = data.get("paint_mode", cfg.paint_mode)
+        if isinstance(pm, str):
+            pm = pm.strip().lower()
+            # Back-compat: allow friendly UI strings
+            if pm in {"paint by row", "row"}:
+                cfg.paint_mode = "row"
+            elif pm in {"paint by color", "color", "colour"}:
+                cfg.paint_mode = "color"
+        else:
+            cfg.paint_mode = cfg.paint_mode
         cfg.shades_panel_button_pos = to_tuple2(data.get("shades_panel_button_pos"))
         cfg.back_button_pos = to_tuple2(data.get("back_button_pos"))
 
