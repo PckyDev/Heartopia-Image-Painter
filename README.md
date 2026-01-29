@@ -61,6 +61,7 @@ From the repo folder:
 4. Click **Import image…** and pick an image.
 5. Click **Select canvas area…** and drag a rectangle over the in-game canvas.
 	- You’ll see a translucent preview to help align it.
+	- Scroll the mouse wheel to enable/adjust a small zoom window near your cursor for precise alignment.
 6. Set up your palette (one time per palette layout):
 	- Click **Setup new color…** and follow the prompts.
 7. (Optional) Adjust timing values under **Timing / reliability**.
@@ -95,6 +96,7 @@ Notes:
 - This app controls your mouse and clicks on your screen.
 - A short countdown appears before painting starts so you can focus the game window.
 - PyAutoGUI failsafe is enabled: move the mouse to the **top-left corner** to abort.
+- You can also press **ESC** to request a stop while it’s painting.
 
 ## Configuration (`config.json`)
 

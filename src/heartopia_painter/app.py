@@ -75,11 +75,49 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._overlay: Optional[RectSelectOverlay] = None
 
+        self._esc_listener = None
+
         self._stop_flag = False
 
         self._build_ui()
         self._apply_persisted_state()
         self._refresh_config_view()
+
+    def _start_esc_listener(self) -> None:
+        # Global hotkey so it works even when the game window is focused.
+        try:
+            from pynput import keyboard  # type: ignore
+        except Exception:
+            self.statusBar().showMessage("ESC stop hotkey unavailable (pynput import failed)", 5000)
+            return
+
+        # Stop any previous listener.
+        self._stop_esc_listener()
+
+        def on_press(key):
+            try:
+                if key == keyboard.Key.esc:
+                    self._stop_flag = True
+                    self._run_on_ui_thread(
+                        lambda: self.statusBar().showMessage("Stop requested (ESC)", 3000)
+                    )
+                    return False  # stop listener
+            except Exception:
+                return None
+            return None
+
+        self._esc_listener = keyboard.Listener(on_press=on_press)
+        self._esc_listener.daemon = True
+        self._esc_listener.start()
+
+    def _stop_esc_listener(self) -> None:
+        try:
+            if self._esc_listener is not None:
+                self._esc_listener.stop()
+        except Exception:
+            pass
+        finally:
+            self._esc_listener = None
 
     def _build_ui(self):
         root = QtWidgets.QWidget()
@@ -752,6 +790,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_paint.setEnabled(False)
         self.btn_stop.setEnabled(True)
         self._stop_flag = False
+        self._start_esc_listener()
 
         total = self._loaded.grid.w * self._loaded.grid.h
 
@@ -839,6 +878,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_stop(self):
         self._stop_flag = True
+        self._stop_esc_listener()
 
     def _on_progress(self, x: int, y: int, total: int):
         idx = y * self._loaded.grid.w + x + 1
@@ -849,10 +889,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_paint.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self.progress.setValue(100)
+        self._stop_esc_listener()
 
     def _on_paint_error(self, msg: str):
         self.btn_paint.setEnabled(True)
         self.btn_stop.setEnabled(False)
+        self._stop_esc_listener()
         QtWidgets.QMessageBox.critical(self, "Paint error", msg)
 
 
