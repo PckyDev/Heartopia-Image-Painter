@@ -91,6 +91,10 @@ Notes:
 - Keep the game window focused and don’t move the mouse during painting.
 - On multi-monitor / DPI scaling setups, if overlays don’t line up, try moving the game to your primary display.
 
+Speed tip:
+
+- Enable **Stroke neighbors (rapid clicks)** to paint adjacent pixels with faster per-pixel clicking (often much faster on large solid areas).
+
 ## Safety
 
 - This app controls your mouse and clicks on your screen.

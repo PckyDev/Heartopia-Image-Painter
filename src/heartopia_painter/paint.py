@@ -7,6 +7,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 import pyautogui
 
 from .config import AppConfig, MainColor, ShadeButton
+from .screen import get_screen_pixel_rgb
 
 
 Point = Tuple[int, int]
@@ -22,14 +23,122 @@ class PainterOptions:
     shade_select_delay_s: float = 0.06
     row_delay_s: float = 0.10
 
+    enable_drag_strokes: bool = False
+    drag_step_duration_s: float = 0.01
+    after_drag_delay_s: float = 0.02
+
 
 def _tap(pos: Point, opts: PainterOptions, extra_delay_s: float = 0.0):
     # Move + mouseDown/mouseUp is more reliable for some games than pyautogui.click().
     pyautogui.moveTo(pos[0], pos[1], duration=max(0.0, float(opts.move_duration_s)))
-    pyautogui.mouseDown()
+    pyautogui.mouseDown(button="left")
     time.sleep(max(0.0, float(opts.mouse_down_s)))
-    pyautogui.mouseUp()
+    pyautogui.mouseUp(button="left")
     time.sleep(max(0.0, float(opts.after_click_delay_s) + float(extra_delay_s)))
+
+
+def _stroke(points: List[Point], opts: PainterOptions, should_stop: Optional[Callable[[], bool]] = None) -> None:
+    if not points:
+        return
+    # Some games respond better to a lower-level mouse controller than PyAutoGUI.
+    try:
+        from pynput.mouse import Button, Controller  # type: ignore
+
+        mouse = Controller()
+        mouse.position = points[0]
+        mouse.press(Button.left)
+        time.sleep(max(0.0, float(opts.mouse_down_s)))
+
+        step = max(0.0, float(opts.drag_step_duration_s))
+        substeps_per_cell = 6
+
+        for target in points[1:]:
+            if should_stop and should_stop():
+                break
+            x0, y0 = mouse.position
+            x1, y1 = target
+            dx = x1 - x0
+            dy = y1 - y0
+
+            # Interpolate a few micro-moves per cell so the game receives
+            # continuous mouse-move events while the button is held.
+            n = max(1, int(substeps_per_cell))
+            for i in range(1, n + 1):
+                if should_stop and should_stop():
+                    break
+                mx = int(round(x0 + dx * (i / n)))
+                my = int(round(y0 + dy * (i / n)))
+                mouse.position = (mx, my)
+                if step > 0:
+                    time.sleep(step / n)
+
+        mouse.release(Button.left)
+        time.sleep(max(0.0, float(opts.after_drag_delay_s)))
+        return
+    except Exception:
+        # Fallback: PyAutoGUI drag
+        pass
+
+    pyautogui.moveTo(points[0][0], points[0][1], duration=max(0.0, float(opts.move_duration_s)))
+    pyautogui.mouseDown(button="left")
+    time.sleep(max(0.0, float(opts.mouse_down_s)))
+    try:
+        step = max(0.0, float(opts.drag_step_duration_s))
+        substeps_per_cell = 6
+        curx, cury = points[0]
+        for px, py in points[1:]:
+            if should_stop and should_stop():
+                return
+            dx = px - curx
+            dy = py - cury
+            n = max(1, int(substeps_per_cell))
+            for i in range(1, n + 1):
+                if should_stop and should_stop():
+                    return
+                mx = int(round(curx + dx * (i / n)))
+                my = int(round(cury + dy * (i / n)))
+                pyautogui.moveTo(mx, my, duration=0)
+                if step > 0:
+                    time.sleep(step / n)
+            curx, cury = px, py
+    finally:
+        pyautogui.mouseUp(button="left")
+    time.sleep(max(0.0, float(opts.after_drag_delay_s)))
+
+
+def _rapid_click_stroke(
+    points: List[Point],
+    opts: PainterOptions,
+    should_stop: Optional[Callable[[], bool]] = None,
+) -> None:
+    """Fast, reliable stroke: click every point in a run with reduced delays.
+
+    This is a fallback when true drag-painting doesn't register in-game.
+    We reuse the drag timing knobs as stroke timing:
+    - drag_step_duration_s: delay between clicks within the stroke
+    - after_drag_delay_s: delay after the stroke finishes
+    """
+
+    if not points:
+        return
+
+    per_click_delay = max(0.0, float(opts.drag_step_duration_s))
+    after_stroke_delay = max(0.0, float(opts.after_drag_delay_s))
+
+    for (px, py) in points:
+        if should_stop and should_stop():
+            return
+        # Move as fast as possible; rely on per-click delay for stability.
+        pyautogui.moveTo(px, py, duration=0)
+        pyautogui.mouseDown(button="left")
+        if opts.mouse_down_s > 0:
+            time.sleep(max(0.0, float(opts.mouse_down_s)))
+        pyautogui.mouseUp(button="left")
+        if per_click_delay > 0:
+            time.sleep(per_click_delay)
+
+    if after_stroke_delay > 0:
+        time.sleep(after_stroke_delay)
 
 
 def _find_best_match(rgb: RGB, cfg: AppConfig) -> Optional[Tuple[MainColor, ShadeButton]]:
@@ -48,6 +157,287 @@ def _find_best_match(rgb: RGB, cfg: AppConfig) -> Optional[Tuple[MainColor, Shad
                 best_dist = d
                 best = (mc, sh)
     return best
+
+
+def _dist2(a: RGB, b: RGB) -> int:
+    return (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2
+
+
+def _ui_sanity_check_at(
+    pos: Point,
+    expected_rgb: RGB,
+    tol: int,
+) -> bool:
+    """Return True if the screen pixel at pos is close to expected_rgb.
+
+    Used to detect when the game window/UI has moved (captured button coords no
+    longer line up), which otherwise causes endless repaint attempts.
+    """
+
+    try:
+        actual = get_screen_pixel_rgb(int(pos[0]), int(pos[1]))
+    except Exception:
+        return False
+    tol2 = max(0, int(tol)) ** 2
+    return _dist2(actual, expected_rgb) <= tol2
+
+
+def _cell_center(canvas_rect: Tuple[int, int, int, int], grid_w: int, grid_h: int, x: int, y: int) -> Point:
+    x0, y0, w, h = canvas_rect
+    cell_w = w / grid_w
+    cell_h = h / grid_h
+    cx = int(x0 + (x + 0.5) * cell_w)
+    cy = int(y0 + (y + 0.5) * cell_h)
+    return (cx, cy)
+
+
+def _select_shade(
+    cfg: AppConfig,
+    options: PainterOptions,
+    main: MainColor,
+    shade: ShadeButton,
+    last_main: Optional[MainColor],
+    last_shade: Optional[ShadeButton],
+    in_shades_panel: bool,
+) -> Tuple[Optional[MainColor], Optional[ShadeButton], bool]:
+    if cfg.shades_panel_button_pos is None or cfg.back_button_pos is None:
+        raise RuntimeError("Color configuration incomplete. Set shades panel + back button positions first.")
+
+    # Sanity tolerance for UI sampling (button pixel colors can vary slightly).
+    ui_tol = max(60, int(getattr(cfg, "verify_tolerance", 35)))
+
+    # Select main if needed
+    if last_main is None or main.name != last_main.name:
+        if in_shades_panel:
+            _tap(cfg.back_button_pos, options)
+            in_shades_panel = False
+        _tap(main.pos, options)
+        _tap(cfg.shades_panel_button_pos, options, extra_delay_s=options.panel_open_delay_s)
+        in_shades_panel = True
+        last_main = main
+        last_shade = None
+
+    if not in_shades_panel:
+        _tap(cfg.shades_panel_button_pos, options, extra_delay_s=options.panel_open_delay_s)
+        in_shades_panel = True
+
+    # NOTE: We intentionally do NOT hard-fail based on sampling shade.pos.
+    # Shade button pixels can vary due to hover/selection highlights and UI
+    # effects, which can produce false positives even when the window is aligned.
+    # We'll rely on repaint verification to correct missed clicks.
+
+    if last_shade is None or shade.pos != last_shade.pos:
+        _tap(shade.pos, options, extra_delay_s=options.shade_select_delay_s)
+        # Extra tap helps when the first click doesn't register.
+        _tap(shade.pos, options, extra_delay_s=0.0)
+        last_shade = shade
+
+    return last_main, last_shade, in_shades_panel
+
+
+def _verify_and_repair_row(
+    cfg: AppConfig,
+    canvas_rect: Tuple[int, int, int, int],
+    grid_w: int,
+    grid_h: int,
+    y: int,
+    row_expected: List[Optional[Tuple[MainColor, ShadeButton]]],
+    options: PainterOptions,
+    progress_cb: Optional[Callable[[int, int], None]] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
+) -> None:
+    if not bool(getattr(cfg, "verify_rows", True)):
+        return
+
+    tol = int(getattr(cfg, "verify_tolerance", 35))
+    tol2 = max(0, tol) ** 2
+    max_passes = max(1, int(getattr(cfg, "verify_max_passes", 10)))
+    settle_s = max(0.0, float(getattr(cfg, "verify_settle_s", 0.05)))
+
+    for _pass in range(max_passes):
+        if should_stop and should_stop():
+            return
+        if settle_s > 0:
+            time.sleep(settle_s)
+
+        # Collect mismatches grouped by shade
+        groups: Dict[Tuple[str, Point], Tuple[MainColor, ShadeButton, List[int]]] = {}
+        for x in range(grid_w):
+            exp = row_expected[x] if x < len(row_expected) else None
+            if exp is None:
+                continue
+            main, shade = exp
+
+            cx, cy = _cell_center(canvas_rect, grid_w, grid_h, x, y)
+            actual = get_screen_pixel_rgb(cx, cy)
+            if _dist2(actual, shade.rgb) <= tol2:
+                continue
+            key = (main.name, shade.pos)
+            if key not in groups:
+                groups[key] = (main, shade, [])
+            groups[key][2].append(x)
+
+        if not groups:
+            return
+
+        # Repaint mismatches, minimizing palette switches.
+        last_main: Optional[MainColor] = None
+        last_shade: Optional[ShadeButton] = None
+        in_shades_panel = False
+
+        ordered = sorted(groups.values(), key=lambda t: (-len(t[2]), t[0].name, t[1].pos[0], t[1].pos[1]))
+        for main, shade, xs in ordered:
+            if should_stop and should_stop():
+                return
+
+            last_main, last_shade, in_shades_panel = _select_shade(
+                cfg,
+                options,
+                main,
+                shade,
+                last_main,
+                last_shade,
+                in_shades_panel,
+            )
+
+            xs.sort()
+            # Break into contiguous runs so we can use the fast stroke option.
+            run: List[int] = []
+            for x in xs:
+                if not run or x == run[-1] + 1:
+                    run.append(x)
+                    continue
+                pts = [_cell_center(canvas_rect, grid_w, grid_h, rx, y) for rx in run]
+                if options.enable_drag_strokes and len(pts) >= 2:
+                    _rapid_click_stroke(pts, options, should_stop=should_stop)
+                else:
+                    for p in pts:
+                        if should_stop and should_stop():
+                            return
+                        _tap(p, options)
+                if progress_cb:
+                    for rx in run:
+                        progress_cb(rx, y)
+                run = [x]
+
+            if run:
+                pts = [_cell_center(canvas_rect, grid_w, grid_h, rx, y) for rx in run]
+                if options.enable_drag_strokes and len(pts) >= 2:
+                    _rapid_click_stroke(pts, options, should_stop=should_stop)
+                else:
+                    for p in pts:
+                        if should_stop and should_stop():
+                            return
+                        _tap(p, options)
+                if progress_cb:
+                    for rx in run:
+                        progress_cb(rx, y)
+
+        if in_shades_panel:
+            _tap(cfg.back_button_pos, options)
+
+    # If we get here, verification never converged.
+    raise RuntimeError(
+        f"Row verification failed (row {y+1}/{grid_h}). "
+        f"Try increasing Verify tolerance or timing, or disable verification."
+    )
+
+
+def _verify_and_repair_color_group(
+    cfg: AppConfig,
+    canvas_rect: Tuple[int, int, int, int],
+    grid_w: int,
+    grid_h: int,
+    main: MainColor,
+    shade: ShadeButton,
+    coords: List[Tuple[int, int]],
+    options: PainterOptions,
+    progress_cb: Optional[Callable[[int, int], None]] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
+) -> None:
+    """Verify/repaint a single shade group after painting it.
+
+    This is used by Paint-by-Color to keep the initial pass fast and then
+    correct any missed pixels per color.
+    """
+
+    if not bool(getattr(cfg, "verify_rows", True)):
+        return
+
+    tol = int(getattr(cfg, "verify_tolerance", 35))
+    tol2 = max(0, tol) ** 2
+    max_passes = max(1, int(getattr(cfg, "verify_max_passes", 10)))
+    settle_s = max(0.0, float(getattr(cfg, "verify_settle_s", 0.05)))
+
+    coords_sorted = sorted(coords, key=lambda xy: (xy[1], xy[0]))
+
+    for _pass in range(max_passes):
+        if should_stop and should_stop():
+            return
+        if settle_s > 0:
+            time.sleep(settle_s)
+
+        mismatches: List[Tuple[int, int]] = []
+        for x, y in coords_sorted:
+            cx, cy = _cell_center(canvas_rect, grid_w, grid_h, x, y)
+            actual = get_screen_pixel_rgb(cx, cy)
+            if _dist2(actual, shade.rgb) > tol2:
+                mismatches.append((x, y))
+
+        if not mismatches:
+            return
+
+        # Force a full reselect each pass; if a click failed earlier, relying on
+        # cached state can keep repainting with the wrong shade.
+        last_main: Optional[MainColor] = None
+        last_shade: Optional[ShadeButton] = None
+        in_shades_panel = False
+
+        last_main, last_shade, in_shades_panel = _select_shade(
+            cfg,
+            options,
+            main,
+            shade,
+            last_main,
+            last_shade,
+            in_shades_panel,
+        )
+
+        # Repaint mismatches, using contiguous horizontal runs for speed.
+        mismatches.sort(key=lambda xy: (xy[1], xy[0]))
+        i = 0
+        while i < len(mismatches):
+            if should_stop and should_stop():
+                return
+            x, y = mismatches[i]
+            run = [(x, y)]
+            j = i + 1
+            while j < len(mismatches):
+                nx, ny = mismatches[j]
+                if ny != y or nx != run[-1][0] + 1:
+                    break
+                run.append((nx, ny))
+                j += 1
+
+            pts = [_cell_center(canvas_rect, grid_w, grid_h, rx, ry) for rx, ry in run]
+            if options.enable_drag_strokes and len(pts) >= 2:
+                _rapid_click_stroke(pts, options, should_stop=should_stop)
+            else:
+                for p in pts:
+                    if should_stop and should_stop():
+                        return
+                    _tap(p, options)
+
+            if progress_cb:
+                for rx, ry in run:
+                    progress_cb(rx, ry)
+
+            i = j
+
+    raise RuntimeError(
+        "Color verification failed for a shade group. "
+        "Try increasing Verify tolerance or timing, or disable verification."
+    )
 
 
 def paint_grid(
@@ -102,48 +492,98 @@ def paint_grid(
     last_shade: Optional[ShadeButton] = None
     in_shades_panel = False
 
+    # Cache best-match results for repeated RGBs.
+    match_cache: Dict[RGB, Optional[Tuple[MainColor, ShadeButton]]] = {}
+
+    def get_match(rgb: RGB) -> Optional[Tuple[MainColor, ShadeButton]]:
+        if rgb in match_cache:
+            return match_cache[rgb]
+        m = _find_best_match(rgb, cfg)
+        match_cache[rgb] = m
+        return m
+
     for y in range(grid_h):
-        for x in range(grid_w):
+        x = 0
+        while x < grid_w:
             if should_stop and should_stop():
                 return
 
             rgb = get_pixel(x, y)
-            match = _find_best_match(rgb, cfg)
+            match = get_match(rgb)
             if match is None:
+                x += 1
                 continue
             main, shade = match
 
+            # Find run of adjacent same-shade pixels to potentially stroke.
+            run_start = x
+            run_end = x
+            while run_end + 1 < grid_w:
+                nxt = get_match(get_pixel(run_end + 1, y))
+                if nxt is None:
+                    break
+                nmain, nshade = nxt
+                if nmain.name != main.name or nshade.pos != shade.pos:
+                    break
+                run_end += 1
+
             # Select main color if changed
             if last_main is None or main.name != last_main.name:
-                # Ensure we're on the main palette before selecting a new main color.
                 if in_shades_panel:
                     _tap(cfg.back_button_pos, options)
                     in_shades_panel = False
-
                 _tap(main.pos, options)
-                # Open shades panel
                 _tap(cfg.shades_panel_button_pos, options, extra_delay_s=options.panel_open_delay_s)
                 in_shades_panel = True
                 last_main = main
                 last_shade = None
 
-            # If something put us back on main palette, re-open shades panel.
             if not in_shades_panel:
                 _tap(cfg.shades_panel_button_pos, options, extra_delay_s=options.panel_open_delay_s)
                 in_shades_panel = True
 
-            # Select shade
             if last_shade is None or shade.pos != last_shade.pos:
                 _tap(shade.pos, options, extra_delay_s=options.shade_select_delay_s)
                 last_shade = shade
 
-            # Paint cell
-            cx = int(x0 + (x + 0.5) * cell_w)
-            cy = int(y0 + (y + 0.5) * cell_h)
-            _tap((cx, cy), options)
+            # Paint run
+            run_len = run_end - run_start + 1
+            if options.enable_drag_strokes and run_len >= 2:
+                pts: List[Point] = []
+                for xx in range(run_start, run_end + 1):
+                    cx = int(x0 + (xx + 0.5) * cell_w)
+                    cy = int(y0 + (y + 0.5) * cell_h)
+                    pts.append((cx, cy))
+                _rapid_click_stroke(pts, options, should_stop=should_stop)
+                if progress_cb:
+                    for xx in range(run_start, run_end + 1):
+                        progress_cb(xx, y)
+            else:
+                for xx in range(run_start, run_end + 1):
+                    cx = int(x0 + (xx + 0.5) * cell_w)
+                    cy = int(y0 + (y + 0.5) * cell_h)
+                    _tap((cx, cy), options)
+                    if progress_cb:
+                        progress_cb(xx, y)
 
-            if progress_cb:
-                progress_cb(x, y)
+            x = run_end + 1
+
+        # Verify the row after it's been attempted once.
+        row_expected: List[Optional[Tuple[MainColor, ShadeButton]]] = [None] * grid_w
+        for xx in range(grid_w):
+            m = get_match(get_pixel(xx, y))
+            row_expected[xx] = m
+        _verify_and_repair_row(
+            cfg=cfg,
+            canvas_rect=canvas_rect,
+            grid_w=grid_w,
+            grid_h=grid_h,
+            y=y,
+            row_expected=row_expected,
+            options=options,
+            progress_cb=progress_cb,
+            should_stop=should_stop,
+        )
 
         if options.row_delay_s > 0:
             time.sleep(options.row_delay_s)
@@ -218,35 +658,77 @@ def _paint_grid_by_color(
         if should_stop and should_stop():
             return
 
-        # Select main if changed
-        if last_main is None or main.name != last_main.name:
-            if in_shades_panel:
-                _tap(cfg.back_button_pos, options)
-                in_shades_panel = False
-            _tap(main.pos, options)
-            _tap(cfg.shades_panel_button_pos, options, extra_delay_s=options.panel_open_delay_s)
-            in_shades_panel = True
-            last_main = main
-            last_shade = None
+        # Use the unified selection logic (includes retries + UI sanity check).
+        last_main, last_shade, in_shades_panel = _select_shade(
+            cfg=cfg,
+            options=options,
+            main=main,
+            shade=shade,
+            last_main=last_main,
+            last_shade=last_shade,
+            in_shades_panel=in_shades_panel,
+        )
 
-        if not in_shades_panel:
-            _tap(cfg.shades_panel_button_pos, options, extra_delay_s=options.panel_open_delay_s)
-            in_shades_panel = True
-
-        if last_shade is None or shade.pos != last_shade.pos:
-            _tap(shade.pos, options, extra_delay_s=options.shade_select_delay_s)
-            last_shade = shade
-
-        # Paint all cells for this shade. Sort by row/col for predictable motion.
+        # Paint all cells for this shade.
+        # Prefer horizontal strokes across adjacent pixels (same shade).
         coords.sort(key=lambda xy: (xy[1], xy[0]))
-        for x, y in coords:
+        i = 0
+        while i < len(coords):
             if should_stop and should_stop():
                 return
-            cx = int(x0 + (x + 0.5) * cell_w)
-            cy = int(y0 + (y + 0.5) * cell_h)
-            _tap((cx, cy), options)
-            if progress_cb:
-                progress_cb(x, y)
+            x, y = coords[i]
+            run = [(x, y)]
+            j = i + 1
+            while j < len(coords):
+                nx, ny = coords[j]
+                # Only stroke along same row with adjacent x.
+                if ny != y or nx != run[-1][0] + 1:
+                    break
+                run.append((nx, ny))
+                j += 1
+
+            if options.enable_drag_strokes and len(run) >= 2:
+                pts: List[Point] = []
+                for rx, ry in run:
+                    cx = int(x0 + (rx + 0.5) * cell_w)
+                    cy = int(y0 + (ry + 0.5) * cell_h)
+                    pts.append((cx, cy))
+                _rapid_click_stroke(pts, options, should_stop=should_stop)
+                if progress_cb:
+                    for rx, ry in run:
+                        progress_cb(rx, ry)
+            else:
+                for rx, ry in run:
+                    cx = int(x0 + (rx + 0.5) * cell_w)
+                    cy = int(y0 + (ry + 0.5) * cell_h)
+                    _tap((cx, cy), options)
+                    if progress_cb:
+                        progress_cb(rx, ry)
+
+            i = j
+
+        # Verify this color batch after painting it (faster than waiting for row completion).
+        _verify_and_repair_color_group(
+            cfg=cfg,
+            canvas_rect=canvas_rect,
+            grid_w=grid_w,
+            grid_h=grid_h,
+            main=main,
+            shade=shade,
+            coords=coords,
+            options=options,
+            progress_cb=progress_cb,
+            should_stop=should_stop,
+        )
+
+        # Keep UI state and our state in sync. The shades panel is typically left
+        # open after selecting a shade; close it between groups so the next main
+        # selection is reliable.
+        if in_shades_panel:
+            _tap(cfg.back_button_pos, options)
+            in_shades_panel = False
+        last_main = None
+        last_shade = None
 
         if options.row_delay_s > 0:
             time.sleep(options.row_delay_s)

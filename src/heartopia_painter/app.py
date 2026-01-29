@@ -11,7 +11,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from .screen import get_screen_pixel_rgb
 from .config import AppConfig, MainColor, ShadeButton, default_config_path, load_config, save_config
 from .image_processing import PixelGrid, load_and_resize_to_grid
-from .overlay import PointResult, PointSelectOverlay, RectResult, RectSelectOverlay
+from .overlay import Marker, MarkersOverlay, PointResult, PointSelectOverlay, RectResult, RectSelectOverlay
 from .paint import PainterOptions, paint_grid
 
 
@@ -75,6 +75,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._overlay: Optional[RectSelectOverlay] = None
 
+        self._markers_overlay: Optional[MarkersOverlay] = None
+
         self._esc_listener = None
 
         self._stop_flag = False
@@ -97,18 +99,32 @@ class MainWindow(QtWidgets.QMainWindow):
         def on_press(key):
             try:
                 if key == keyboard.Key.esc:
+                    # Stop painting immediately (worker thread checks should_stop).
                     self._stop_flag = True
-                    self._run_on_ui_thread(
-                        lambda: self.statusBar().showMessage("Stop requested (ESC)", 3000)
-                    )
+
+                    # Also route through the normal Stop path on the UI thread.
+                    self._run_on_ui_thread(self._on_stop)
                     return False  # stop listener
             except Exception:
                 return None
             return None
 
-        self._esc_listener = keyboard.Listener(on_press=on_press)
-        self._esc_listener.daemon = True
-        self._esc_listener.start()
+        # On some Windows setups, suppress=True can fail (or require elevated privileges).
+        # Prefer suppression to avoid ESC closing dialogs, but fall back if needed.
+        try:
+            self._esc_listener = keyboard.Listener(on_press=on_press, suppress=True)
+            self._esc_listener.daemon = True
+            self._esc_listener.start()
+            self.statusBar().showMessage("ESC hotkey armed (suppressed)", 2500)
+        except Exception:
+            try:
+                self._esc_listener = keyboard.Listener(on_press=on_press, suppress=False)
+                self._esc_listener.daemon = True
+                self._esc_listener.start()
+                self.statusBar().showMessage("ESC hotkey armed", 2500)
+            except Exception:
+                self._esc_listener = None
+                self.statusBar().showMessage("ESC stop hotkey unavailable (listener failed)", 5000)
 
     def _stop_esc_listener(self) -> None:
         try:
@@ -170,8 +186,10 @@ class MainWindow(QtWidgets.QMainWindow):
         row_cfg1 = QtWidgets.QHBoxLayout()
         self.btn_set_shades_button = QtWidgets.QPushButton("Set shades-panel button")
         self.btn_set_back_button = QtWidgets.QPushButton("Set back button")
+        self.btn_show_main_overlay = QtWidgets.QPushButton("Show main-color overlay")
         row_cfg1.addWidget(self.btn_set_shades_button)
         row_cfg1.addWidget(self.btn_set_back_button)
+        row_cfg1.addWidget(self.btn_show_main_overlay)
         cfg_layout.addLayout(row_cfg1)
 
         row_cfg2 = QtWidgets.QHBoxLayout()
@@ -215,6 +233,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self.spin_shade = ms_spin(0, 2000, 10)
         self.spin_row = ms_spin(0, 5000, 10)
 
+        self.chk_drag = QtWidgets.QCheckBox("Stroke neighbors (rapid clicks)")
+        self.spin_drag_step = ms_spin(0, 200, 1)
+        self.spin_after_drag = ms_spin(0, 2000, 10)
+
+        self.chk_verify = QtWidgets.QCheckBox("Verify (repaint misses)")
+        self.spin_verify_tol = QtWidgets.QSpinBox()
+        self.spin_verify_tol.setRange(0, 255)
+        self.spin_verify_tol.setSingleStep(1)
+        self.spin_verify_tol.setSuffix(" tol")
+        self.spin_verify_passes = QtWidgets.QSpinBox()
+        self.spin_verify_passes.setRange(1, 50)
+        self.spin_verify_passes.setSingleStep(1)
+        self.spin_verify_passes.setSuffix(" passes")
+
         tlay.addWidget(QtWidgets.QLabel("Mouse move duration:"), 0, 0)
         tlay.addWidget(self.spin_move, 0, 1)
         tlay.addWidget(QtWidgets.QLabel("Mouse down hold:"), 1, 0)
@@ -227,6 +259,18 @@ class MainWindow(QtWidgets.QMainWindow):
         tlay.addWidget(self.spin_shade, 1, 3)
         tlay.addWidget(QtWidgets.QLabel("Row delay:"), 2, 2)
         tlay.addWidget(self.spin_row, 2, 3)
+
+        tlay.addWidget(self.chk_drag, 3, 0, 1, 2)
+        tlay.addWidget(QtWidgets.QLabel("Stroke step delay:"), 3, 2)
+        tlay.addWidget(self.spin_drag_step, 3, 3)
+        tlay.addWidget(QtWidgets.QLabel("After stroke delay:"), 4, 2)
+        tlay.addWidget(self.spin_after_drag, 4, 3)
+
+        tlay.addWidget(self.chk_verify, 4, 0, 1, 2)
+        tlay.addWidget(QtWidgets.QLabel("Verify tolerance:"), 5, 2)
+        tlay.addWidget(self.spin_verify_tol, 5, 3)
+        tlay.addWidget(QtWidgets.QLabel("Verify max passes:"), 6, 2)
+        tlay.addWidget(self.spin_verify_passes, 6, 3)
 
         paint_layout.addWidget(timing)
 
@@ -258,6 +302,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_select_canvas.clicked.connect(self._on_select_canvas)
         self.btn_set_shades_button.clicked.connect(lambda: self._capture_global_button("shades"))
         self.btn_set_back_button.clicked.connect(lambda: self._capture_global_button("back"))
+        self.btn_show_main_overlay.clicked.connect(self._on_toggle_main_color_overlay)
         self.btn_add_color.clicked.connect(self._on_setup_new_color)
         self.btn_remove_color.clicked.connect(self._on_remove_selected_color)
         self.btn_fix_swap_rb.clicked.connect(self._on_fix_swap_rb)
@@ -276,6 +321,45 @@ class MainWindow(QtWidgets.QMainWindow):
         self.spin_panel.valueChanged.connect(self._on_timing_changed)
         self.spin_shade.valueChanged.connect(self._on_timing_changed)
         self.spin_row.valueChanged.connect(self._on_timing_changed)
+        self.chk_drag.stateChanged.connect(lambda _v: self._on_timing_changed(0))
+        self.spin_drag_step.valueChanged.connect(self._on_timing_changed)
+        self.spin_after_drag.valueChanged.connect(self._on_timing_changed)
+
+        self.chk_verify.stateChanged.connect(lambda _v: self._on_verify_changed())
+        self.spin_verify_tol.valueChanged.connect(lambda _v: self._on_verify_changed())
+        self.spin_verify_passes.valueChanged.connect(lambda _v: self._on_verify_changed())
+
+    def _on_toggle_main_color_overlay(self) -> None:
+        # Toggle if already visible.
+        try:
+            if self._markers_overlay is not None and self._markers_overlay.isVisible():
+                self._markers_overlay.hide()
+                return
+        except Exception:
+            pass
+
+        markers: list[Marker] = []
+        for mc in getattr(self._cfg, "main_colors", []) or []:
+            pos = getattr(mc, "pos", None)
+            if not pos or tuple(pos) == (0, 0):
+                continue
+            rgb = getattr(mc, "rgb", (0, 200, 255))
+            markers.append(Marker(label=str(getattr(mc, "name", "Color")), pos=(int(pos[0]), int(pos[1])), color=rgb))
+
+        if not markers:
+            QtWidgets.QMessageBox.information(
+                self,
+                "No main colors",
+                "No main color button positions are saved yet.\n\nUse 'Setup new color…' first.",
+            )
+            return
+
+        self._markers_overlay = MarkersOverlay(
+            markers=markers,
+            title="Main color button positions",
+            duration_ms=15000,
+        )
+        self._markers_overlay.start()
 
     def _apply_persisted_state(self):
         # Restore preset
@@ -333,9 +417,15 @@ class MainWindow(QtWidgets.QMainWindow):
             self.spin_panel,
             self.spin_shade,
             self.spin_row,
+            self.spin_drag_step,
+            self.spin_after_drag,
         ]
         for w in widgets:
             w.blockSignals(True)
+        self.chk_drag.blockSignals(True)
+        self.chk_verify.blockSignals(True)
+        self.spin_verify_tol.blockSignals(True)
+        self.spin_verify_passes.blockSignals(True)
 
         self.spin_move.setValue(to_ms(self._cfg.move_duration_s))
         self.spin_down.setValue(to_ms(self._cfg.mouse_down_s))
@@ -344,8 +434,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self.spin_shade.setValue(to_ms(self._cfg.shade_select_delay_s))
         self.spin_row.setValue(to_ms(self._cfg.row_delay_s))
 
+        self.chk_drag.setChecked(bool(getattr(self._cfg, "enable_drag_strokes", False)))
+        self.spin_drag_step.setValue(to_ms(getattr(self._cfg, "drag_step_duration_s", 0.01)))
+        self.spin_after_drag.setValue(to_ms(getattr(self._cfg, "after_drag_delay_s", 0.02)))
+
+        self.chk_verify.setChecked(bool(getattr(self._cfg, "verify_rows", True)))
+        self.spin_verify_tol.setValue(int(getattr(self._cfg, "verify_tolerance", 35)))
+        self.spin_verify_passes.setValue(int(getattr(self._cfg, "verify_max_passes", 10)))
+
         for w in widgets:
             w.blockSignals(False)
+        self.chk_drag.blockSignals(False)
+        self.chk_verify.blockSignals(False)
+        self.spin_verify_tol.blockSignals(False)
+        self.spin_verify_passes.blockSignals(False)
 
     def _on_timing_changed(self, _value: int):
         # Persist timing settings immediately
@@ -358,6 +460,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self._cfg.panel_open_delay_s = to_s(self.spin_panel.value())
         self._cfg.shade_select_delay_s = to_s(self.spin_shade.value())
         self._cfg.row_delay_s = to_s(self.spin_row.value())
+
+        self._cfg.enable_drag_strokes = bool(self.chk_drag.isChecked())
+        self._cfg.drag_step_duration_s = to_s(self.spin_drag_step.value())
+        self._cfg.after_drag_delay_s = to_s(self.spin_after_drag.value())
+        self._save_cfg()
+
+    def _on_verify_changed(self) -> None:
+        self._cfg.verify_rows = bool(self.chk_verify.isChecked())
+        self._cfg.verify_tolerance = int(self.spin_verify_tol.value())
+        self._cfg.verify_max_passes = int(self.spin_verify_passes.value())
         self._save_cfg()
 
     def _refresh_config_view(self):
@@ -838,6 +950,9 @@ class MainWindow(QtWidgets.QMainWindow):
                     panel_open_delay_s=self._cfg.panel_open_delay_s,
                     shade_select_delay_s=self._cfg.shade_select_delay_s,
                     row_delay_s=self._cfg.row_delay_s,
+                    enable_drag_strokes=bool(getattr(self._cfg, "enable_drag_strokes", False)),
+                    drag_step_duration_s=float(getattr(self._cfg, "drag_step_duration_s", 0.01)),
+                    after_drag_delay_s=float(getattr(self._cfg, "after_drag_delay_s", 0.02)),
                 )
 
                 def get_pixel(x: int, y: int):

@@ -53,6 +53,18 @@ class AppConfig:
     shade_select_delay_s: float = 0.06
     row_delay_s: float = 0.10
 
+    # Optional: drag strokes across adjacent same-color pixels.
+    # Disabled by default because some games/canvases may not support drag painting.
+    enable_drag_strokes: bool = False
+    drag_step_duration_s: float = 0.01
+    after_drag_delay_s: float = 0.02
+
+    # Verification (row-by-row repaint until correct)
+    verify_rows: bool = True
+    verify_tolerance: int = 35  # max per-channel-ish RGB distance tolerance (used as Euclidean threshold)
+    verify_max_passes: int = 10
+    verify_settle_s: float = 0.05
+
     # Painting mode
     # - "row": iterate pixels in row/column order
     # - "color": group by shade and paint one shade at a time
@@ -155,6 +167,21 @@ class AppConfig:
         cfg.panel_open_delay_s = to_float(data.get("panel_open_delay_s"), cfg.panel_open_delay_s)
         cfg.shade_select_delay_s = to_float(data.get("shade_select_delay_s"), cfg.shade_select_delay_s)
         cfg.row_delay_s = to_float(data.get("row_delay_s"), cfg.row_delay_s)
+
+        cfg.enable_drag_strokes = bool(data.get("enable_drag_strokes", cfg.enable_drag_strokes))
+        cfg.drag_step_duration_s = to_float(data.get("drag_step_duration_s"), cfg.drag_step_duration_s)
+        cfg.after_drag_delay_s = to_float(data.get("after_drag_delay_s"), cfg.after_drag_delay_s)
+
+        cfg.verify_rows = bool(data.get("verify_rows", cfg.verify_rows))
+        try:
+            cfg.verify_tolerance = int(data.get("verify_tolerance", cfg.verify_tolerance))
+        except Exception:
+            pass
+        try:
+            cfg.verify_max_passes = int(data.get("verify_max_passes", cfg.verify_max_passes))
+        except Exception:
+            pass
+        cfg.verify_settle_s = to_float(data.get("verify_settle_s"), cfg.verify_settle_s)
 
         pm = data.get("paint_mode", cfg.paint_mode)
         if isinstance(pm, str):
