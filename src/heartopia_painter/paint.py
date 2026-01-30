@@ -208,7 +208,14 @@ def _select_shade(
 
     # Select main if needed
     if last_main is None or main.name != last_main.name:
-        if in_shades_panel:
+        # Defensive: when switching main colors, ALWAYS try to return to the main
+        # palette first. If a previous Back click failed to register, our
+        # in_shades_panel flag may be False while the UI is still in the shades
+        # panel (which causes main-color clicks to hit the wrong UI).
+        if last_main is not None:
+            _tap(cfg.back_button_pos, options)
+            in_shades_panel = False
+        elif in_shades_panel:
             _tap(cfg.back_button_pos, options)
             in_shades_panel = False
         _tap(main.pos, options)
