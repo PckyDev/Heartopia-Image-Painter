@@ -65,6 +65,10 @@ class AppConfig:
     verify_max_passes: int = 10
     verify_settle_s: float = 0.05
 
+    # Optional: show an always-on-top, click-through status overlay over the game
+    # during painting/verification.
+    status_overlay_enabled: bool = True
+
     # Painting mode
     # - "row": iterate pixels in row/column order
     # - "color": group by shade and paint one shade at a time
@@ -196,6 +200,8 @@ class AppConfig:
         except Exception:
             pass
         cfg.verify_settle_s = to_float(data.get("verify_settle_s"), cfg.verify_settle_s)
+
+        cfg.status_overlay_enabled = bool(data.get("status_overlay_enabled", cfg.status_overlay_enabled))
 
         pm = data.get("paint_mode", cfg.paint_mode)
         if isinstance(pm, str):

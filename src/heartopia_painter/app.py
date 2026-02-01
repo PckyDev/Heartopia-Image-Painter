@@ -11,7 +11,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from .screen import get_screen_pixel_rgb
 from .config import AppConfig, MainColor, ShadeButton, default_config_path, load_config, save_config
 from .image_processing import PixelGrid, load_and_resize_to_grid
-from .overlay import Marker, MarkersOverlay, PointResult, PointSelectOverlay, RectResult, RectSelectOverlay
+from .overlay import Marker, MarkersOverlay, PointResult, PointSelectOverlay, RectResult, RectSelectOverlay, StatusOverlay
 from .paint import PainterOptions, paint_grid
 
 
@@ -56,6 +56,8 @@ class ClickCaptureResult:
 
 class WorkerSignals(QtCore.QObject):
     progress = QtCore.Signal(int, int)
+    status = QtCore.Signal(str)
+    verify_cell = QtCore.Signal(int, int)
     finished = QtCore.Signal()
     error = QtCore.Signal(str)
     paused = QtCore.Signal(str)
@@ -79,6 +81,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._markers_overlay: Optional[MarkersOverlay] = None
 
+        self._status_overlay: Optional[StatusOverlay] = None
+        self._game_window_rect: Optional[Tuple[int, int, int, int]] = None
+
         self._esc_listener = None
 
         self._stop_flag = False
@@ -92,6 +97,64 @@ class MainWindow(QtWidgets.QMainWindow):
         self._build_ui()
         self._apply_persisted_state()
         self._refresh_config_view()
+
+    def _ensure_status_overlay(self) -> StatusOverlay:
+        if self._status_overlay is None:
+            self._status_overlay = StatusOverlay(title="Heartopia Painter")
+        return self._status_overlay
+
+    def _capture_foreground_window_rect(self) -> Optional[Tuple[int, int, int, int]]:
+        # Best-effort on Windows; used to anchor the in-game overlays.
+        if os.name != "nt":
+            return None
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            user32 = ctypes.windll.user32
+            hwnd = user32.GetForegroundWindow()
+            if not hwnd:
+                return None
+            rect = wintypes.RECT()
+            if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                return None
+            return (int(rect.left), int(rect.top), int(rect.right), int(rect.bottom))
+        except Exception:
+            return None
+
+    def _hide_status_overlay(self) -> None:
+        try:
+            if self._status_overlay is not None:
+                self._status_overlay.stop()
+        except Exception:
+            pass
+        # Status overlay contains replica canvas + cursors; nothing else to stop.
+
+    def _on_worker_status(self, msg: str) -> None:
+        if not bool(getattr(self._cfg, "status_overlay_enabled", True)):
+            return
+        ov = self._ensure_status_overlay()
+        if self._game_window_rect is not None:
+            ov.set_anchor_rect(self._game_window_rect)
+        if not ov.isVisible():
+            ov.start()
+        ov.set_status(msg)
+
+    def _on_worker_verify_cell(self, x: int, y: int) -> None:
+        if not bool(getattr(self._cfg, "status_overlay_enabled", True)):
+            return
+        ov = self._ensure_status_overlay()
+        if self._game_window_rect is not None:
+            ov.set_anchor_rect(self._game_window_rect)
+        if not ov.isVisible():
+            ov.start()
+        ov.set_verify_cursor(int(x), int(y))
+
+    def _on_worker_progress(self, x: int, y: int) -> None:
+        # IMPORTANT: connect worker signals to QObject methods (not lambdas)
+        # so Qt can safely queue delivery onto the UI thread.
+        total = int(self._paint_total) if int(self._paint_total) > 0 else 1
+        self._on_progress(int(x), int(y), total)
 
     def _start_esc_listener(self) -> None:
         # Global hotkey so it works even when the game window is focused.
@@ -281,6 +344,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.spin_verify_passes.setSingleStep(1)
         self.spin_verify_passes.setSuffix(" passes")
 
+        self.chk_status_overlay = QtWidgets.QCheckBox("Show in-game status overlay")
+
         tlay.addWidget(QtWidgets.QLabel("Mouse move duration:"), 0, 0)
         tlay.addWidget(self.spin_move, 0, 1)
         tlay.addWidget(QtWidgets.QLabel("Mouse down hold:"), 1, 0)
@@ -305,6 +370,8 @@ class MainWindow(QtWidgets.QMainWindow):
         tlay.addWidget(self.spin_verify_tol, 5, 3)
         tlay.addWidget(QtWidgets.QLabel("Verify max passes:"), 6, 2)
         tlay.addWidget(self.spin_verify_passes, 6, 3)
+
+        tlay.addWidget(self.chk_status_overlay, 7, 0, 1, 2)
 
         tab_timing_layout.addWidget(timing)
 
@@ -405,6 +472,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.chk_verify.stateChanged.connect(lambda _v: self._on_verify_changed())
         self.spin_verify_tol.valueChanged.connect(lambda _v: self._on_verify_changed())
         self.spin_verify_passes.valueChanged.connect(lambda _v: self._on_verify_changed())
+
+        self.chk_status_overlay.stateChanged.connect(lambda _v: self._on_status_overlay_changed())
+
+    def _on_status_overlay_changed(self) -> None:
+        self._cfg.status_overlay_enabled = bool(self.chk_status_overlay.isChecked())
+        self._save_cfg()
+        if not self._cfg.status_overlay_enabled:
+            self._hide_status_overlay()
 
     def _on_toggle_main_color_overlay(self) -> None:
         # Toggle if already visible.
@@ -507,6 +582,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.spin_bucket_min.blockSignals(True)
         self.chk_bucket_regions.blockSignals(True)
         self.spin_bucket_regions_min.blockSignals(True)
+        self.chk_status_overlay.blockSignals(True)
 
         self.spin_move.setValue(to_ms(self._cfg.move_duration_s))
         self.spin_down.setValue(to_ms(self._cfg.mouse_down_s))
@@ -529,6 +605,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.chk_bucket_regions.setChecked(bool(getattr(self._cfg, "bucket_fill_regions_enabled", False)))
         self.spin_bucket_regions_min.setValue(int(getattr(self._cfg, "bucket_fill_regions_min_cells", 200)))
 
+        self.chk_status_overlay.setChecked(bool(getattr(self._cfg, "status_overlay_enabled", True)))
+
         for w in widgets:
             w.blockSignals(False)
         self.chk_drag.blockSignals(False)
@@ -539,6 +617,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.spin_bucket_min.blockSignals(False)
         self.chk_bucket_regions.blockSignals(False)
         self.spin_bucket_regions_min.blockSignals(False)
+        self.chk_status_overlay.blockSignals(False)
 
     def _on_timing_changed(self, _value: int):
         # Persist timing settings immediately
@@ -1127,12 +1206,25 @@ class MainWindow(QtWidgets.QMainWindow):
         pct = int((len(self._paint_done) / denom) * 100)
         self.progress.setValue(max(0, min(100, pct)))
 
+        # Replica canvas progress (best-effort)
+        if bool(getattr(self._cfg, "status_overlay_enabled", True)):
+            try:
+                ov = self._ensure_status_overlay()
+                if self._game_window_rect is not None:
+                    ov.set_anchor_rect(self._game_window_rect)
+                if not ov.isVisible():
+                    ov.start()
+                ov.mark_painted(int(x), int(y))
+            except Exception:
+                pass
+
     def _on_paint_done(self):
         self.btn_paint.setEnabled(True)
         self.btn_resume.setEnabled(False)
         self.btn_stop.setEnabled(False)
         self.progress.setValue(100)
         self._stop_esc_listener()
+        self._hide_status_overlay()
         self._reset_paint_session()
 
     def _on_paint_paused(self, msg: str) -> None:
@@ -1140,6 +1232,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_resume.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self._stop_esc_listener()
+        self._hide_status_overlay()
         self._paint_paused = True
         self.statusBar().showMessage(msg or "Paused", 4000)
 
@@ -1148,6 +1241,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_resume.setEnabled(False)
         self.btn_stop.setEnabled(False)
         self._stop_esc_listener()
+        self._hide_status_overlay()
         self._reset_paint_session()
         self.statusBar().showMessage(msg or "Stopped", 4000)
 
@@ -1155,6 +1249,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_paint.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self._stop_esc_listener()
+        self._hide_status_overlay()
 
         # Keep the session state so the user can tweak settings and resume.
         self._paint_paused = True
@@ -1193,14 +1288,37 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_stop.setEnabled(True)
         self._stop_flag = False
         self._stop_reason = None
+
+        # Capture the active (foreground) window as the game window for overlay anchoring.
+        # This runs after the countdown, so the user should have focused the game.
+        self._game_window_rect = self._capture_foreground_window_rect()
         self._start_esc_listener()
 
+        # Prepare the in-game status overlay (UI thread only).
+        if bool(getattr(self._cfg, "status_overlay_enabled", True)):
+            try:
+                ov = self._ensure_status_overlay()
+                if self._game_window_rect is not None:
+                    ov.set_anchor_rect(self._game_window_rect)
+                ov.set_grid(self._loaded.grid.w, self._loaded.grid.h, self._loaded.grid.pixels)
+                if resume and self._paint_done:
+                    for (xx, yy) in list(self._paint_done):
+                        ov.mark_painted(int(xx), int(yy))
+                if not ov.isVisible():
+                    ov.start()
+                ov.set_status("Starting…")
+            except Exception:
+                pass
+
         signals = WorkerSignals()
-        signals.progress.connect(lambda x, y: self._on_progress(x, y, total))
-        signals.finished.connect(self._on_paint_done)
-        signals.error.connect(self._on_paint_error)
-        signals.paused.connect(self._on_paint_paused)
-        signals.stopped.connect(self._on_paint_stopped)
+        qc = QtCore.Qt.ConnectionType.QueuedConnection
+        signals.progress.connect(self._on_worker_progress, qc)
+        signals.status.connect(self._on_worker_status, qc)
+        signals.verify_cell.connect(self._on_worker_verify_cell, qc)
+        signals.finished.connect(self._on_paint_done, qc)
+        signals.error.connect(self._on_paint_error, qc)
+        signals.paused.connect(self._on_paint_paused, qc)
+        signals.stopped.connect(self._on_paint_stopped, qc)
 
         def work():
             try:
@@ -1221,6 +1339,21 @@ class MainWindow(QtWidgets.QMainWindow):
 
                 skip_fn = (lambda x, y: (int(x), int(y)) in self._paint_done) if resume else None
 
+                def status_cb(msg: str) -> None:
+                    try:
+                        signals.status.emit(str(msg))
+                    except Exception:
+                        pass
+
+                def verify_cb(pt: Optional[Tuple[int, int]]) -> None:
+                    try:
+                        if pt is None:
+                            signals.verify_cell.emit(-1, -1)
+                        else:
+                            signals.verify_cell.emit(int(pt[0]), int(pt[1]))
+                    except Exception:
+                        pass
+
                 paint_grid(
                     cfg=self._cfg,
                     canvas_rect=self._canvas_rect,
@@ -1233,6 +1366,8 @@ class MainWindow(QtWidgets.QMainWindow):
                     allow_bucket_fill=(not resume),
                     progress_cb=lambda x, y: signals.progress.emit(x, y),
                     should_stop=lambda: self._stop_flag,
+                    status_cb=status_cb,
+                    verify_cb=verify_cb,
                 )
 
                 if self._stop_flag:

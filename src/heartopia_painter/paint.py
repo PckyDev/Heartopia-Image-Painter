@@ -163,6 +163,40 @@ def _dist2(a: RGB, b: RGB) -> int:
     return (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2
 
 
+def _sleep_with_stop(duration_s: float, should_stop: Optional[Callable[[], bool]] = None) -> bool:
+    """Sleep in small chunks so stop/pause can interrupt quickly.
+
+    Returns False if interrupted by should_stop.
+    """
+
+    d = max(0.0, float(duration_s))
+    if d <= 0:
+        return True
+    end = time.perf_counter() + d
+    while True:
+        if should_stop and should_stop():
+            return False
+        now = time.perf_counter()
+        if now >= end:
+            return True
+        time.sleep(min(0.02, max(0.0, end - now)))
+
+
+def _maybe_emit_verify(
+    verify_cb: Optional[Callable[[Optional[Tuple[int, int]]], None]],
+    pt: Optional[Tuple[int, int]],
+    idx: int,
+    every: int = 10,
+) -> None:
+    if verify_cb is None:
+        return
+    if every <= 1 or (idx % every) == 0:
+        try:
+            verify_cb(pt)
+        except Exception:
+            pass
+
+
 def _ui_sanity_check_at(
     pos: Point,
     expected_rgb: RGB,
@@ -365,6 +399,8 @@ def _verify_outline_then_repair(
     expected_rgb: RGB,
     options: PainterOptions,
     should_stop: Optional[Callable[[], bool]] = None,
+    status_cb: Optional[Callable[[str], None]] = None,
+    verify_cb: Optional[Callable[[Optional[Tuple[int, int]]], None]] = None,
 ) -> bool:
     """Verify outline pixels are painted correctly; repaint misses if needed.
 
@@ -388,11 +424,21 @@ def _verify_outline_then_repair(
         if should_stop and should_stop():
             return False
         if settle_s > 0:
-            time.sleep(settle_s)
+            if not _sleep_with_stop(settle_s, should_stop=should_stop):
+                return False
+
+        if status_cb is not None:
+            try:
+                status_cb(f"Verifying outline… pass {_pass+1}/{max_passes}")
+            except Exception:
+                pass
 
         mism: List[Tuple[int, int]] = []
-        for x, y in coords:
+        for i, (x, y) in enumerate(coords):
+            if should_stop and should_stop():
+                return False
             cx, cy = _cell_center(canvas_rect, grid_w, grid_h, x, y)
+            _maybe_emit_verify(verify_cb, (x, y), i, every=8)
             actual = get_screen_pixel_rgb(cx, cy)
             if _dist2(actual, expected_rgb) > tol2:
                 mism.append((x, y))
@@ -412,6 +458,7 @@ def _verify_outline_then_repair(
             should_stop=should_stop,
         )
 
+    _maybe_emit_verify(verify_cb, None, 0, every=1)
     return False
 
 
@@ -425,8 +472,11 @@ def _verify_and_repair_row(
     options: PainterOptions,
     progress_cb: Optional[Callable[[int, int], None]] = None,
     should_stop: Optional[Callable[[], bool]] = None,
+    status_cb: Optional[Callable[[str], None]] = None,
+    verify_cb: Optional[Callable[[Optional[Tuple[int, int]]], None]] = None,
 ) -> None:
     if not bool(getattr(cfg, "verify_rows", True)):
+        _maybe_emit_verify(verify_cb, None, 0, every=1)
         return
 
     tol = int(getattr(cfg, "verify_tolerance", 35))
@@ -438,17 +488,27 @@ def _verify_and_repair_row(
         if should_stop and should_stop():
             return
         if settle_s > 0:
-            time.sleep(settle_s)
+            if not _sleep_with_stop(settle_s, should_stop=should_stop):
+                return
+
+        if status_cb is not None:
+            try:
+                status_cb(f"Verifying row {y+1}/{grid_h}… pass {_pass+1}/{max_passes}")
+            except Exception:
+                pass
 
         # Collect mismatches grouped by shade
         groups: Dict[Tuple[str, Point], Tuple[MainColor, ShadeButton, List[int]]] = {}
         for x in range(grid_w):
+            if should_stop and should_stop():
+                return
             exp = row_expected[x] if x < len(row_expected) else None
             if exp is None:
                 continue
             main, shade = exp
 
             cx, cy = _cell_center(canvas_rect, grid_w, grid_h, x, y)
+            _maybe_emit_verify(verify_cb, (x, y), x, every=6)
             actual = get_screen_pixel_rgb(cx, cy)
             if _dist2(actual, shade.rgb) <= tol2:
                 continue
@@ -458,6 +518,7 @@ def _verify_and_repair_row(
             groups[key][2].append(x)
 
         if not groups:
+            _maybe_emit_verify(verify_cb, None, 0, every=1)
             return
 
         # Repaint mismatches, minimizing palette switches.
@@ -516,6 +577,8 @@ def _verify_and_repair_row(
         if in_shades_panel:
             _tap(cfg.back_button_pos, options)
 
+    _maybe_emit_verify(verify_cb, None, 0, every=1)
+
     # If we get here, verification never converged.
     raise RuntimeError(
         f"Row verification failed (row {y+1}/{grid_h}). "
@@ -534,6 +597,8 @@ def _verify_and_repair_color_group(
     options: PainterOptions,
     progress_cb: Optional[Callable[[int, int], None]] = None,
     should_stop: Optional[Callable[[], bool]] = None,
+    status_cb: Optional[Callable[[str], None]] = None,
+    verify_cb: Optional[Callable[[Optional[Tuple[int, int]]], None]] = None,
 ) -> None:
     """Verify/repaint a single shade group after painting it.
 
@@ -555,16 +620,29 @@ def _verify_and_repair_color_group(
         if should_stop and should_stop():
             return
         if settle_s > 0:
-            time.sleep(settle_s)
+            if not _sleep_with_stop(settle_s, should_stop=should_stop):
+                return
+
+        if status_cb is not None:
+            try:
+                status_cb(
+                    f"Verifying color '{main.name}/{shade.name}'… pass {_pass+1}/{max_passes}"
+                )
+            except Exception:
+                pass
 
         mismatches: List[Tuple[int, int]] = []
-        for x, y in coords_sorted:
+        for i, (x, y) in enumerate(coords_sorted):
+            if should_stop and should_stop():
+                return
             cx, cy = _cell_center(canvas_rect, grid_w, grid_h, x, y)
+            _maybe_emit_verify(verify_cb, (x, y), i, every=10)
             actual = get_screen_pixel_rgb(cx, cy)
             if _dist2(actual, shade.rgb) > tol2:
                 mismatches.append((x, y))
 
         if not mismatches:
+            _maybe_emit_verify(verify_cb, None, 0, every=1)
             return
 
         # Force a full reselect each pass; if a click failed earlier, relying on
@@ -632,6 +710,8 @@ def paint_grid(
     allow_bucket_fill: bool = True,
     progress_cb: Optional[Callable[[int, int], None]] = None,
     should_stop: Optional[Callable[[], bool]] = None,
+    status_cb: Optional[Callable[[str], None]] = None,
+    verify_cb: Optional[Callable[[Optional[Tuple[int, int]]], None]] = None,
 ) -> None:
     """Paints a WxH pixel grid into a canvas rectangle.
 
@@ -658,6 +738,11 @@ def paint_grid(
 
     mode = (paint_mode or "row").strip().lower()
     if mode in {"color", "colour", "paint by color"}:
+        if status_cb is not None:
+            try:
+                status_cb("Painting by color…")
+            except Exception:
+                pass
         _paint_grid_by_color(
             cfg=cfg,
             canvas_rect=canvas_rect,
@@ -669,6 +754,8 @@ def paint_grid(
             allow_bucket_fill=allow_bucket_fill,
             progress_cb=progress_cb,
             should_stop=should_stop,
+            status_cb=status_cb,
+            verify_cb=verify_cb,
         )
         return
 
@@ -727,7 +814,18 @@ def paint_grid(
                     should_stop=should_stop,
                 )
 
+                if status_cb is not None:
+                    try:
+                        status_cb(f"Bucket-filled base color: {bucket_main.name}/{bucket_shade.name}")
+                    except Exception:
+                        pass
+
     for y in range(grid_h):
+        if status_cb is not None:
+            try:
+                status_cb(f"Painting row {y+1}/{grid_h}…")
+            except Exception:
+                pass
         x = 0
         while x < grid_w:
             if should_stop and should_stop():
@@ -826,10 +924,13 @@ def paint_grid(
             options=options,
             progress_cb=progress_cb,
             should_stop=should_stop,
+            status_cb=status_cb,
+            verify_cb=verify_cb,
         )
 
         if options.row_delay_s > 0:
-            time.sleep(options.row_delay_s)
+            if not _sleep_with_stop(options.row_delay_s, should_stop=should_stop):
+                return
 
     # Leave the game UI in a predictable state.
     if in_shades_panel:
@@ -847,6 +948,8 @@ def _paint_grid_by_color(
     allow_bucket_fill: bool = True,
     progress_cb: Optional[Callable[[int, int], None]] = None,
     should_stop: Optional[Callable[[], bool]] = None,
+    status_cb: Optional[Callable[[str], None]] = None,
+    verify_cb: Optional[Callable[[Optional[Tuple[int, int]]], None]] = None,
 ) -> None:
     """Paint all pixels grouped by shade.
 
@@ -904,6 +1007,11 @@ def _paint_grid_by_color(
         main0, shade0, coords0 = ordered[0]
         min_cells = max(0, int(getattr(cfg, "bucket_fill_min_cells", 50)))
         if len(coords0) >= min_cells:
+            if status_cb is not None:
+                try:
+                    status_cb(f"Bucket-filling base canvas: {main0.name}/{shade0.name}…")
+                except Exception:
+                    pass
             _bucket_fill_canvas_with_shade(
                 cfg=cfg,
                 canvas_rect=canvas_rect,
@@ -943,6 +1051,11 @@ def _paint_grid_by_color(
             continue
 
         # Use the unified selection logic (includes retries + UI sanity check).
+        if status_cb is not None:
+            try:
+                status_cb(f"Selecting shade: {main.name}/{shade.name}…")
+            except Exception:
+                pass
         last_main, last_shade, in_shades_panel = _select_shade(
             cfg=cfg,
             options=options,
@@ -958,12 +1071,6 @@ def _paint_grid_by_color(
         remaining = coords
         if regions_enabled and regions_min_cells > 0 and len(coords) >= regions_min_cells:
             coord_set = set(coords)
-
-            def touches_edge(comp: List[Tuple[int, int]]) -> bool:
-                for cx, cy in comp:
-                    if cx <= 0 or cy <= 0 or cx >= grid_w - 1 or cy >= grid_h - 1:
-                        return True
-                return False
 
             bucketed: set[Tuple[int, int]] = set()
 
@@ -984,9 +1091,9 @@ def _paint_grid_by_color(
 
                 if len(comp) < regions_min_cells:
                     continue
-                if touches_edge(comp):
-                    # Not safe to bucket-fill; leave for normal per-pixel paint.
-                    continue
+                # Edge-touching components are allowed; the game canvas boundary
+                # acts as a hard stop, and we also verify the outline before
+                # bucket-filling to reduce spill risk.
 
                 comp_set = set(comp)
                 boundary: List[Tuple[int, int]] = []
@@ -1007,6 +1114,11 @@ def _paint_grid_by_color(
                     continue
 
                 # Outline boundary pixels with the target shade (paint tool).
+                if status_cb is not None:
+                    try:
+                        status_cb(f"Region fill: outlining {len(boundary)} px, filling {len(comp)} px…")
+                    except Exception:
+                        pass
                 _tap(cfg.paint_tool_button_pos, options)
                 _paint_coord_runs(
                     cfg=cfg,
@@ -1029,8 +1141,15 @@ def _paint_grid_by_color(
                     expected_rgb=shade.rgb,
                     options=options,
                     should_stop=should_stop,
+                    status_cb=status_cb,
+                    verify_cb=verify_cb,
                 ):
                     # Can't guarantee a sealed boundary; skip bucket-fill for safety.
+                    if status_cb is not None:
+                        try:
+                            status_cb("Region fill skipped (outline didn't verify)")
+                        except Exception:
+                            pass
                     continue
 
                 if should_stop and should_stop():
@@ -1053,6 +1172,11 @@ def _paint_grid_by_color(
 
         # Paint remaining cells for this shade.
         # Prefer horizontal strokes across adjacent pixels (same shade).
+        if status_cb is not None:
+            try:
+                status_cb(f"Painting shade: {main.name}/{shade.name} ({len(remaining)} px) …")
+            except Exception:
+                pass
         _paint_coord_runs(
             cfg=cfg,
             canvas_rect=canvas_rect,
@@ -1076,6 +1200,8 @@ def _paint_grid_by_color(
             options=options,
             progress_cb=progress_cb,
             should_stop=should_stop,
+            status_cb=status_cb,
+            verify_cb=verify_cb,
         )
 
         # Keep UI state and our state in sync. The shades panel is typically left
