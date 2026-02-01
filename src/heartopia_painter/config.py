@@ -91,6 +91,8 @@ class AppConfig:
     # Tool buttons
     paint_tool_button_pos: Optional[Point] = None
     bucket_tool_button_pos: Optional[Point] = None
+    eraser_tool_button_pos: Optional[Point] = None
+    eraser_thickness_up_button_pos: Optional[Point] = None
 
     main_colors: List[MainColor] = field(default_factory=list)
 
@@ -234,6 +236,8 @@ class AppConfig:
 
         cfg.paint_tool_button_pos = to_tuple2(data.get("paint_tool_button_pos"))
         cfg.bucket_tool_button_pos = to_tuple2(data.get("bucket_tool_button_pos"))
+        cfg.eraser_tool_button_pos = to_tuple2(data.get("eraser_tool_button_pos"))
+        cfg.eraser_thickness_up_button_pos = to_tuple2(data.get("eraser_thickness_up_button_pos"))
 
         cfg.main_colors = []
         for mc in data.get("main_colors", []):

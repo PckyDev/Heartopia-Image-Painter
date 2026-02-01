@@ -141,6 +141,139 @@ def _rapid_click_stroke(
         time.sleep(after_stroke_delay)
 
 
+def _interruptible_sleep(duration_s: float, should_stop: Optional[Callable[[], bool]] = None) -> bool:
+    """Sleep in small increments so ESC/pause can interrupt quickly.
+
+    Returns False if interrupted by should_stop(), True if the full sleep elapsed.
+    """
+
+    try:
+        dur = max(0.0, float(duration_s))
+    except Exception:
+        dur = 0.0
+
+    end = time.time() + dur
+    while True:
+        if should_stop and should_stop():
+            return False
+        now = time.time()
+        if now >= end:
+            return True
+        time.sleep(min(0.02, max(0.0, end - now)))
+
+
+# Back-compat: some older call sites used the misspelling.
+_interruptable_sleep = _interruptible_sleep
+
+
+def erase_canvas(
+    cfg: AppConfig,
+    canvas_rect: Tuple[int, int, int, int],
+    grid_w: int,
+    grid_h: int,
+    options: PainterOptions,
+    should_stop: Optional[Callable[[], bool]] = None,
+    status_cb: Optional[Callable[[str], None]] = None,
+) -> None:
+    """Erase the whole canvas quickly.
+
+    Workflow:
+    - Select eraser tool
+    - Click thickness-up 5x (assumes that reaches 10x10)
+    - Sweep horizontal bands across the canvas
+    """
+
+    if cfg.eraser_tool_button_pos is None or cfg.eraser_thickness_up_button_pos is None:
+        raise RuntimeError(
+            "Eraser configuration missing. Set 'eraser tool button' and 'eraser thickness + button' first."
+        )
+
+    if grid_w <= 0 or grid_h <= 0:
+        raise RuntimeError("Invalid grid size.")
+
+    def stop() -> bool:
+        return bool(should_stop and should_stop())
+
+    if status_cb:
+        try:
+            status_cb("Selecting eraser tool…")
+        except Exception:
+            pass
+    _tap(cfg.eraser_tool_button_pos, options)
+    if stop():
+        return
+
+    if status_cb:
+        try:
+            status_cb("Setting eraser size (5x)…")
+        except Exception:
+            pass
+    for _ in range(5):
+        if stop():
+            return
+        _tap(cfg.eraser_thickness_up_button_pos, options)
+
+    if status_cb:
+        try:
+            status_cb("Erasing canvas…")
+        except Exception:
+            pass
+
+    # Erase-specific click timing: much faster than paint, but keep a tiny
+    # non-zero hold so games register the click.
+    erase_click_opts = PainterOptions(
+        move_duration_s=0.0,
+        mouse_down_s=max(0.006, min(0.02, float(options.mouse_down_s))),
+        after_click_delay_s=max(0.0, min(0.01, float(options.after_click_delay_s))),
+        panel_open_delay_s=float(options.panel_open_delay_s),
+        shade_select_delay_s=float(options.shade_select_delay_s),
+        row_delay_s=float(options.row_delay_s),
+        enable_drag_strokes=False,
+        drag_step_duration_s=float(options.drag_step_duration_s),
+        after_drag_delay_s=float(options.after_drag_delay_s),
+    )
+
+    # Periodic micro-pauses help avoid the game/UI dropping fast click bursts.
+    taps = 0
+    burst_pause_every = 30
+    burst_pause_s = 0.02
+
+    # Erase should always be click-based (no stroke-neighbors/drag strokes),
+    # since drag can fail to register in some UI states.
+    step = 10
+    y_step = 10
+
+    for band_idx, y0 in enumerate(range(0, grid_h, y_step)):
+        if stop():
+            return
+
+        # Aim for the middle of the vertical band.
+        y = min(grid_h - 1, y0 + y_step // 2)
+
+        if status_cb and (y0 % max(1, y_step * 4) == 0):
+            try:
+                status_cb(f"Erasing… row {y0+1}/{grid_h}")
+            except Exception:
+                pass
+
+        # Click-based erase, fast but reliable: step by 10 cells.
+        # Use a snake pattern so the cursor doesn't waste time jumping back.
+        xs = list(range(0, grid_w, step))
+        if (grid_w - 1) not in xs:
+            xs.append(grid_w - 1)
+        if (band_idx % 2) == 1:
+            xs = list(reversed(xs))
+
+        for x in xs:
+            if stop():
+                return
+            pt = _cell_center(canvas_rect, grid_w, grid_h, int(x), int(y))
+            _tap(pt, erase_click_opts)
+            taps += 1
+            if (taps % burst_pause_every) == 0:
+                _interruptible_sleep(burst_pause_s, should_stop)
+
+
 def _find_best_match(rgb: RGB, cfg: AppConfig) -> Optional[Tuple[MainColor, ShadeButton]]:
     # Naive: choose closest shade across all colors.
     # Later: speed up with caching / KD-tree.

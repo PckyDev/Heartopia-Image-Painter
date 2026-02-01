@@ -478,7 +478,7 @@ class StatusOverlay(QtWidgets.QWidget):
         self._update_timer: Optional[QtCore.QTimer] = None
 
         # Default size; includes a small replica canvas.
-        self.resize(860, 280)
+        self.resize(360, 300)
 
         self.hide()
 
@@ -572,7 +572,17 @@ class StatusOverlay(QtWidgets.QWidget):
     def _reposition_to_anchor(self) -> None:
         if self._anchor_rect is None:
             return
-        self.move(self._anchor_rect.left() + 16, self._anchor_rect.top() + 16)
+        margin = 16
+        ar = self._anchor_rect
+
+        # Bottom-left of the game window.
+        x = ar.left() + margin
+        y = ar.bottom() - self.height() - margin
+
+        # Clamp vertically so we never go above the window.
+        y = max(ar.top() + margin, y)
+
+        self.move(int(x), int(y))
 
     def _apply_platform_clickthrough(self) -> None:
         if os.name != "nt":

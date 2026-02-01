@@ -12,7 +12,7 @@ from .screen import get_screen_pixel_rgb
 from .config import AppConfig, MainColor, ShadeButton, default_config_path, load_config, save_config
 from .image_processing import PixelGrid, load_and_resize_to_grid
 from .overlay import Marker, MarkersOverlay, PointResult, PointSelectOverlay, RectResult, RectSelectOverlay, StatusOverlay
-from .paint import PainterOptions, paint_grid
+from .paint import PainterOptions, erase_canvas, paint_grid
 
 
 ONE_TO_ONE_PRESET_NAME = "1:1"
@@ -298,6 +298,13 @@ class MainWindow(QtWidgets.QMainWindow):
         row_cfg_tools.addWidget(self.btn_set_bucket_tool)
         cfg_layout.addLayout(row_cfg_tools)
 
+        row_cfg_tools2 = QtWidgets.QHBoxLayout()
+        self.btn_set_eraser_tool = QtWidgets.QPushButton("Set eraser tool button")
+        self.btn_set_eraser_thick_up = QtWidgets.QPushButton("Set eraser thickness + button")
+        row_cfg_tools2.addWidget(self.btn_set_eraser_tool)
+        row_cfg_tools2.addWidget(self.btn_set_eraser_thick_up)
+        cfg_layout.addLayout(row_cfg_tools2)
+
         row_cfg2 = QtWidgets.QHBoxLayout()
         self.btn_add_color = QtWidgets.QPushButton("Setup new color…")
         self.btn_remove_color = QtWidgets.QPushButton("Remove selected")
@@ -425,10 +432,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_paint = QtWidgets.QPushButton("Paint now")
         self.btn_resume = QtWidgets.QPushButton("Resume")
         self.btn_resume.setEnabled(False)
+        self.btn_erase = QtWidgets.QPushButton("Erase canvas")
         self.btn_stop = QtWidgets.QPushButton("Stop")
         self.btn_stop.setEnabled(False)
         rowp.addWidget(self.btn_paint)
         rowp.addWidget(self.btn_resume)
+        rowp.addWidget(self.btn_erase)
         rowp.addWidget(self.btn_stop)
         paint_layout.addLayout(rowp)
 
@@ -449,11 +458,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_show_main_overlay.clicked.connect(self._on_toggle_main_color_overlay)
         self.btn_set_paint_tool.clicked.connect(lambda: self._capture_global_button("paint_tool"))
         self.btn_set_bucket_tool.clicked.connect(lambda: self._capture_global_button("bucket_tool"))
+        self.btn_set_eraser_tool.clicked.connect(lambda: self._capture_global_button("eraser_tool"))
+        self.btn_set_eraser_thick_up.clicked.connect(lambda: self._capture_global_button("eraser_thick_up"))
         self.btn_add_color.clicked.connect(self._on_setup_new_color)
         self.btn_remove_color.clicked.connect(self._on_remove_selected_color)
         self.btn_fix_swap_rb.clicked.connect(self._on_fix_swap_rb)
         self.btn_paint.clicked.connect(self._on_paint)
         self.btn_resume.clicked.connect(self._on_resume)
+        self.btn_erase.clicked.connect(self._on_erase)
         self.btn_stop.clicked.connect(self._on_stop)
 
         self.cbo_preset.currentTextChanged.connect(self._on_preset_changed)
@@ -679,12 +691,16 @@ class MainWindow(QtWidgets.QMainWindow):
         bp = self._cfg.back_button_pos
         pp = getattr(self._cfg, "paint_tool_button_pos", None)
         bk = getattr(self._cfg, "bucket_tool_button_pos", None)
+        er = getattr(self._cfg, "eraser_tool_button_pos", None)
+        eu = getattr(self._cfg, "eraser_thickness_up_button_pos", None)
         sp_txt = f"{sp}" if sp is not None else "(not set)"
         bp_txt = f"{bp}" if bp is not None else "(not set)"
         pp_txt = f"{pp}" if pp is not None else "(not set)"
         bk_txt = f"{bk}" if bk is not None else "(not set)"
+        er_txt = f"{er}" if er is not None else "(not set)"
+        eu_txt = f"{eu}" if eu is not None else "(not set)"
         self.lbl_global_buttons.setText(
-            f"Palette buttons — Shades panel: {sp_txt} | Back: {bp_txt} | Paint tool: {pp_txt} | Bucket: {bk_txt}"
+            f"Palette buttons — Shades panel: {sp_txt} | Back: {bp_txt} | Paint tool: {pp_txt} | Bucket: {bk_txt} | Eraser: {er_txt} | Eraser +: {eu_txt}"
         )
 
     def _save_cfg(self):
@@ -864,6 +880,12 @@ class MainWindow(QtWidgets.QMainWindow):
         elif which == "bucket_tool":
             self._cfg.bucket_tool_button_pos = res.pos
             self._confirm_capture("bucket tool button", res)
+        elif which == "eraser_tool":
+            self._cfg.eraser_tool_button_pos = res.pos
+            self._confirm_capture("eraser tool button", res)
+        elif which == "eraser_thick_up":
+            self._cfg.eraser_thickness_up_button_pos = res.pos
+            self._confirm_capture("eraser thickness + button", res)
         self._save_cfg()
         self._refresh_config_view()
 
@@ -1128,6 +1150,142 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._start_paint_worker(resume=False)
 
+    def _on_erase(self) -> None:
+        if self._canvas_rect is None:
+            QtWidgets.QMessageBox.information(self, "Missing", "Select canvas area first.")
+            return
+
+        if self._cfg.eraser_tool_button_pos is None or self._cfg.eraser_thickness_up_button_pos is None:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Missing configuration",
+                "Capture the eraser tool button and the eraser thickness + button first (Color configuration tab).",
+            )
+            return
+
+        if (
+            QtWidgets.QMessageBox.warning(
+                self,
+                "About to erase",
+                "This will control your mouse and erase the entire selected canvas in-game.\n"
+                "Make sure the game is focused and the canvas is visible.\n\n"
+                "PyAutoGUI failsafe: move mouse to top-left to abort.",
+                QtWidgets.QMessageBox.StandardButton.Ok
+                | QtWidgets.QMessageBox.StandardButton.Cancel,
+            )
+            != QtWidgets.QMessageBox.StandardButton.Ok
+        ):
+            return
+
+        if not self._paint_countdown(seconds=3):
+            return
+
+        # Erasing invalidates any paused paint session.
+        self._reset_paint_session()
+        self._start_erase_worker()
+
+    def _on_erase_done(self) -> None:
+        self.btn_paint.setEnabled(True)
+        self.btn_resume.setEnabled(False)
+        self.btn_erase.setEnabled(True)
+        self.btn_stop.setEnabled(False)
+        self._stop_esc_listener()
+        self._hide_status_overlay()
+        self.statusBar().showMessage("Erase complete", 4000)
+
+    def _on_erase_stopped(self, msg: str) -> None:
+        self.btn_paint.setEnabled(True)
+        self.btn_resume.setEnabled(False)
+        self.btn_erase.setEnabled(True)
+        self.btn_stop.setEnabled(False)
+        self._stop_esc_listener()
+        self._hide_status_overlay()
+        self.statusBar().showMessage(msg or "Erase stopped", 4000)
+
+    def _on_erase_error(self, msg: str) -> None:
+        self.btn_paint.setEnabled(True)
+        self.btn_resume.setEnabled(False)
+        self.btn_erase.setEnabled(True)
+        self.btn_stop.setEnabled(False)
+        self._stop_esc_listener()
+        self._hide_status_overlay()
+        QtWidgets.QMessageBox.warning(self, "Erase failed", f"Erase hit an error.\n\nError: {msg}")
+
+    def _start_erase_worker(self) -> None:
+        if self._canvas_rect is None:
+            return
+
+        self.btn_paint.setEnabled(False)
+        self.btn_resume.setEnabled(False)
+        self.btn_erase.setEnabled(False)
+        self.btn_stop.setEnabled(True)
+        self._stop_flag = False
+        self._stop_reason = None
+
+        # Capture the active (foreground) window as the game window for overlay anchoring.
+        self._game_window_rect = self._capture_foreground_window_rect()
+        self._start_esc_listener()
+
+        if bool(getattr(self._cfg, "status_overlay_enabled", True)):
+            try:
+                ov = self._ensure_status_overlay()
+                if self._game_window_rect is not None:
+                    ov.set_anchor_rect(self._game_window_rect)
+                if not ov.isVisible():
+                    ov.start()
+                ov.set_status("Starting erase…")
+            except Exception:
+                pass
+
+        signals = WorkerSignals()
+        qc = QtCore.Qt.ConnectionType.QueuedConnection
+        signals.status.connect(self._on_worker_status, qc)
+        signals.finished.connect(self._on_erase_done, qc)
+        signals.error.connect(self._on_erase_error, qc)
+        signals.stopped.connect(self._on_erase_stopped, qc)
+
+        def work():
+            try:
+                opts = PainterOptions(
+                    move_duration_s=self._cfg.move_duration_s,
+                    mouse_down_s=self._cfg.mouse_down_s,
+                    after_click_delay_s=self._cfg.after_click_delay_s,
+                    panel_open_delay_s=self._cfg.panel_open_delay_s,
+                    shade_select_delay_s=self._cfg.shade_select_delay_s,
+                    row_delay_s=self._cfg.row_delay_s,
+                    enable_drag_strokes=bool(getattr(self._cfg, "enable_drag_strokes", False)),
+                    drag_step_duration_s=float(getattr(self._cfg, "drag_step_duration_s", 0.01)),
+                    after_drag_delay_s=float(getattr(self._cfg, "after_drag_delay_s", 0.02)),
+                )
+
+                grid_w, grid_h = self._selected_preset_wh()
+
+                def status_cb(msg: str) -> None:
+                    try:
+                        signals.status.emit(str(msg))
+                    except Exception:
+                        pass
+
+                erase_canvas(
+                    cfg=self._cfg,
+                    canvas_rect=self._canvas_rect,
+                    grid_w=int(grid_w),
+                    grid_h=int(grid_h),
+                    options=opts,
+                    should_stop=lambda: self._stop_flag,
+                    status_cb=status_cb,
+                )
+
+                if self._stop_flag:
+                    signals.stopped.emit("Erase stopped")
+                    return
+
+                signals.finished.emit()
+            except Exception as e:
+                signals.error.emit(str(e))
+
+        threading.Thread(target=work, daemon=True).start()
+
     def _paint_countdown(self, seconds: int = 3) -> bool:
         """Modal countdown before starting automation. Returns False if cancelled."""
         dlg = QtWidgets.QDialog(self)
@@ -1231,6 +1389,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_paint_done(self):
         self.btn_paint.setEnabled(True)
         self.btn_resume.setEnabled(False)
+        self.btn_erase.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self.progress.setValue(100)
         self._stop_esc_listener()
@@ -1240,6 +1399,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_paint_paused(self, msg: str) -> None:
         self.btn_paint.setEnabled(True)
         self.btn_resume.setEnabled(True)
+        self.btn_erase.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self._stop_esc_listener()
         self._hide_status_overlay()
@@ -1249,6 +1409,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_paint_stopped(self, msg: str) -> None:
         self.btn_paint.setEnabled(True)
         self.btn_resume.setEnabled(False)
+        self.btn_erase.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self._stop_esc_listener()
         self._hide_status_overlay()
@@ -1258,6 +1419,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_paint_error(self, msg: str):
         self.btn_paint.setEnabled(True)
         self.btn_stop.setEnabled(False)
+        self.btn_erase.setEnabled(True)
         self._stop_esc_listener()
         self._hide_status_overlay()
 
@@ -1295,6 +1457,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.btn_paint.setEnabled(False)
         self.btn_resume.setEnabled(False)
+        self.btn_erase.setEnabled(False)
         self.btn_stop.setEnabled(True)
         self._stop_flag = False
         self._stop_reason = None
