@@ -74,6 +74,12 @@ class AppConfig:
     bucket_fill_enabled: bool = False
     bucket_fill_min_cells: int = 50
 
+    # Optional extra speed-up (Paint-by-Color): detect large connected regions of a shade,
+    # outline them, then bucket-fill the inside. Works best when the canvas started from
+    # a uniform base fill.
+    bucket_fill_regions_enabled: bool = False
+    bucket_fill_regions_min_cells: int = 200
+
     # Buttons that are global (same regardless of which color is selected)
     shades_panel_button_pos: Optional[Point] = None
     back_button_pos: Optional[Point] = None
@@ -207,6 +213,16 @@ class AppConfig:
         cfg.bucket_fill_enabled = bool(data.get("bucket_fill_enabled", cfg.bucket_fill_enabled))
         try:
             cfg.bucket_fill_min_cells = int(data.get("bucket_fill_min_cells", cfg.bucket_fill_min_cells))
+        except Exception:
+            pass
+
+        cfg.bucket_fill_regions_enabled = bool(
+            data.get("bucket_fill_regions_enabled", cfg.bucket_fill_regions_enabled)
+        )
+        try:
+            cfg.bucket_fill_regions_min_cells = int(
+                data.get("bucket_fill_regions_min_cells", cfg.bucket_fill_regions_min_cells)
+            )
         except Exception:
             pass
 

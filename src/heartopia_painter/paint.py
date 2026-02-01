@@ -301,6 +301,61 @@ def _bucket_fill_canvas_with_shade(
         time.sleep(settle_s)
 
 
+def _paint_coord_runs(
+    cfg: AppConfig,
+    canvas_rect: Tuple[int, int, int, int],
+    grid_w: int,
+    grid_h: int,
+    coords: List[Tuple[int, int]],
+    options: PainterOptions,
+    progress_cb: Optional[Callable[[int, int], None]] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
+) -> None:
+    """Paint an arbitrary set of coords (assumes correct shade already selected)."""
+
+    if not coords:
+        return
+
+    x0, y0, w, h = canvas_rect
+    cell_w = w / grid_w
+    cell_h = h / grid_h
+
+    coords.sort(key=lambda xy: (xy[1], xy[0]))
+    i = 0
+    while i < len(coords):
+        if should_stop and should_stop():
+            return
+        x, y = coords[i]
+        run = [(x, y)]
+        j = i + 1
+        while j < len(coords):
+            nx, ny = coords[j]
+            if ny != y or nx != run[-1][0] + 1:
+                break
+            run.append((nx, ny))
+            j += 1
+
+        pts: List[Point] = []
+        for rx, ry in run:
+            cx = int(x0 + (rx + 0.5) * cell_w)
+            cy = int(y0 + (ry + 0.5) * cell_h)
+            pts.append((cx, cy))
+
+        if options.enable_drag_strokes and len(pts) >= 2:
+            _rapid_click_stroke(pts, options, should_stop=should_stop)
+        else:
+            for p in pts:
+                if should_stop and should_stop():
+                    return
+                _tap(p, options)
+
+        if progress_cb:
+            for rx, ry in run:
+                progress_cb(rx, ry)
+
+        i = j
+
+
 def _verify_and_repair_row(
     cfg: AppConfig,
     canvas_rect: Tuple[int, int, int, int],
@@ -806,6 +861,17 @@ def _paint_grid_by_color(
                 for xx, yy in coords0:
                     progress_cb(xx, yy)
 
+    # Optional region bucket fill (outline then fill). Only meaningful if we have a
+    # base fill; otherwise bucket fill can leak into other unpainted base-colored areas.
+    regions_enabled = (
+        allow_bucket_fill
+        and bucket_key is not None
+        and bool(getattr(cfg, "bucket_fill_regions_enabled", False))
+        and cfg.paint_tool_button_pos is not None
+        and cfg.bucket_tool_button_pos is not None
+    )
+    regions_min_cells = max(0, int(getattr(cfg, "bucket_fill_regions_min_cells", 200)))
+
     last_main: Optional[MainColor] = None
     last_shade: Optional[ShadeButton] = None
     in_shades_panel = False
@@ -828,43 +894,102 @@ def _paint_grid_by_color(
             in_shades_panel=in_shades_panel,
         )
 
-        # Paint all cells for this shade.
-        # Prefer horizontal strokes across adjacent pixels (same shade).
-        coords.sort(key=lambda xy: (xy[1], xy[0]))
-        i = 0
-        while i < len(coords):
-            if should_stop and should_stop():
-                return
-            x, y = coords[i]
-            run = [(x, y)]
-            j = i + 1
-            while j < len(coords):
-                nx, ny = coords[j]
-                # Only stroke along same row with adjacent x.
-                if ny != y or nx != run[-1][0] + 1:
-                    break
-                run.append((nx, ny))
-                j += 1
+        # If enabled, bucket-fill large connected regions by outlining first.
+        # This is very fast when the canvas currently has a uniform base color.
+        remaining = coords
+        if regions_enabled and regions_min_cells > 0 and len(coords) >= regions_min_cells:
+            coord_set = set(coords)
 
-            if options.enable_drag_strokes and len(run) >= 2:
-                pts: List[Point] = []
-                for rx, ry in run:
-                    cx = int(x0 + (rx + 0.5) * cell_w)
-                    cy = int(y0 + (ry + 0.5) * cell_h)
-                    pts.append((cx, cy))
-                _rapid_click_stroke(pts, options, should_stop=should_stop)
+            def touches_edge(comp: List[Tuple[int, int]]) -> bool:
+                for cx, cy in comp:
+                    if cx <= 0 or cy <= 0 or cx >= grid_w - 1 or cy >= grid_h - 1:
+                        return True
+                return False
+
+            bucketed: set[Tuple[int, int]] = set()
+
+            while coord_set:
+                if should_stop and should_stop():
+                    return
+                start = next(iter(coord_set))
+                stack = [start]
+                comp: List[Tuple[int, int]] = []
+                coord_set.remove(start)
+                while stack:
+                    px, py = stack.pop()
+                    comp.append((px, py))
+                    for nx, ny in ((px - 1, py), (px + 1, py), (px, py - 1), (px, py + 1)):
+                        if (nx, ny) in coord_set:
+                            coord_set.remove((nx, ny))
+                            stack.append((nx, ny))
+
+                if len(comp) < regions_min_cells:
+                    continue
+                if touches_edge(comp):
+                    # Not safe to bucket-fill; leave for normal per-pixel paint.
+                    continue
+
+                comp_set = set(comp)
+                boundary: List[Tuple[int, int]] = []
+                interior: Optional[Tuple[int, int]] = None
+                for px, py in comp:
+                    is_boundary = False
+                    for nx, ny in ((px - 1, py), (px + 1, py), (px, py - 1), (px, py + 1)):
+                        if (nx, ny) not in comp_set:
+                            is_boundary = True
+                            break
+                    if is_boundary:
+                        boundary.append((px, py))
+                    elif interior is None:
+                        interior = (px, py)
+
+                if interior is None:
+                    # No interior (thin shape) -> not worth bucket filling.
+                    continue
+
+                # Outline boundary pixels with the target shade (paint tool).
+                _tap(cfg.paint_tool_button_pos, options)
+                _paint_coord_runs(
+                    cfg=cfg,
+                    canvas_rect=canvas_rect,
+                    grid_w=grid_w,
+                    grid_h=grid_h,
+                    coords=boundary,
+                    options=options,
+                    progress_cb=None,
+                    should_stop=should_stop,
+                )
+
+                if should_stop and should_stop():
+                    return
+
+                # Bucket-fill inside the outlined region.
+                _tap(cfg.bucket_tool_button_pos, options)
+                fx, fy = interior
+                _tap(_cell_center(canvas_rect, grid_w, grid_h, fx, fy), options)
+                _tap(cfg.paint_tool_button_pos, options)
+
+                bucketed |= comp_set
+
                 if progress_cb:
-                    for rx, ry in run:
-                        progress_cb(rx, ry)
-            else:
-                for rx, ry in run:
-                    cx = int(x0 + (rx + 0.5) * cell_w)
-                    cy = int(y0 + (ry + 0.5) * cell_h)
-                    _tap((cx, cy), options)
-                    if progress_cb:
-                        progress_cb(rx, ry)
+                    for xx, yy in comp:
+                        progress_cb(xx, yy)
 
-            i = j
+            if bucketed:
+                remaining = [xy for xy in coords if xy not in bucketed]
+
+        # Paint remaining cells for this shade.
+        # Prefer horizontal strokes across adjacent pixels (same shade).
+        _paint_coord_runs(
+            cfg=cfg,
+            canvas_rect=canvas_rect,
+            grid_w=grid_w,
+            grid_h=grid_h,
+            coords=list(remaining),
+            options=options,
+            progress_cb=progress_cb,
+            should_stop=should_stop,
+        )
 
         # Verify this color batch after painting it (faster than waiting for row completion).
         _verify_and_repair_color_group(

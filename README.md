@@ -102,6 +102,8 @@ Speed tip:
 
 - Enable **Stroke neighbors (rapid clicks)** to paint adjacent pixels with faster per-pixel clicking (often much faster on large solid areas).
 - Enable **Bucket-fill most-used color first** to fill the entire canvas with the most common shade, then paint the remaining colors normally.
+- Enable **Bucket-fill large regions (outline first)** (Paint-by-Color) to outline large same-shade regions and bucket-fill the inside.
+	- This works best when **Bucket-fill most-used color first** is also enabled, because the canvas starts from a uniform base fill.
 
 ## Safety
 

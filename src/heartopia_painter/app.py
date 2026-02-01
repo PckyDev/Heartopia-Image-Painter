@@ -334,6 +334,18 @@ class MainWindow(QtWidgets.QMainWindow):
         row_bucket.addWidget(self.spin_bucket_min)
         paint_layout.addLayout(row_bucket)
 
+        row_bucket2 = QtWidgets.QHBoxLayout()
+        self.chk_bucket_regions = QtWidgets.QCheckBox("Bucket-fill large regions (outline first)")
+        self.spin_bucket_regions_min = QtWidgets.QSpinBox()
+        self.spin_bucket_regions_min.setRange(0, 100000)
+        self.spin_bucket_regions_min.setSingleStep(25)
+        self.spin_bucket_regions_min.setSuffix(" min cells")
+        row_bucket2.addWidget(self.chk_bucket_regions)
+        row_bucket2.addStretch(1)
+        row_bucket2.addWidget(QtWidgets.QLabel("Threshold:"))
+        row_bucket2.addWidget(self.spin_bucket_regions_min)
+        paint_layout.addLayout(row_bucket2)
+
         rowp = QtWidgets.QHBoxLayout()
         self.btn_paint = QtWidgets.QPushButton("Paint now")
         self.btn_resume = QtWidgets.QPushButton("Resume")
@@ -377,6 +389,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.chk_bucket_fill.stateChanged.connect(lambda _v: self._on_bucket_fill_changed())
         self.spin_bucket_min.valueChanged.connect(lambda _v: self._on_bucket_fill_changed())
+        self.chk_bucket_regions.stateChanged.connect(lambda _v: self._on_bucket_fill_changed())
+        self.spin_bucket_regions_min.valueChanged.connect(lambda _v: self._on_bucket_fill_changed())
 
         self.spin_move.valueChanged.connect(self._on_timing_changed)
         self.spin_down.valueChanged.connect(self._on_timing_changed)
@@ -491,6 +505,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.spin_verify_passes.blockSignals(True)
         self.chk_bucket_fill.blockSignals(True)
         self.spin_bucket_min.blockSignals(True)
+        self.chk_bucket_regions.blockSignals(True)
+        self.spin_bucket_regions_min.blockSignals(True)
 
         self.spin_move.setValue(to_ms(self._cfg.move_duration_s))
         self.spin_down.setValue(to_ms(self._cfg.mouse_down_s))
@@ -510,6 +526,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.chk_bucket_fill.setChecked(bool(getattr(self._cfg, "bucket_fill_enabled", False)))
         self.spin_bucket_min.setValue(int(getattr(self._cfg, "bucket_fill_min_cells", 50)))
 
+        self.chk_bucket_regions.setChecked(bool(getattr(self._cfg, "bucket_fill_regions_enabled", False)))
+        self.spin_bucket_regions_min.setValue(int(getattr(self._cfg, "bucket_fill_regions_min_cells", 200)))
+
         for w in widgets:
             w.blockSignals(False)
         self.chk_drag.blockSignals(False)
@@ -518,6 +537,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.spin_verify_passes.blockSignals(False)
         self.chk_bucket_fill.blockSignals(False)
         self.spin_bucket_min.blockSignals(False)
+        self.chk_bucket_regions.blockSignals(False)
+        self.spin_bucket_regions_min.blockSignals(False)
 
     def _on_timing_changed(self, _value: int):
         # Persist timing settings immediately
@@ -545,6 +566,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_bucket_fill_changed(self) -> None:
         self._cfg.bucket_fill_enabled = bool(self.chk_bucket_fill.isChecked())
         self._cfg.bucket_fill_min_cells = int(self.spin_bucket_min.value())
+        self._cfg.bucket_fill_regions_enabled = bool(self.chk_bucket_regions.isChecked())
+        self._cfg.bucket_fill_regions_min_cells = int(self.spin_bucket_regions_min.value())
         self._save_cfg()
 
     def _refresh_config_view(self):
