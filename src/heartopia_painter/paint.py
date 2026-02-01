@@ -546,6 +546,8 @@ def _verify_outline_then_repair(
     should_stop: Optional[Callable[[], bool]] = None,
     status_cb: Optional[Callable[[str], None]] = None,
     verify_cb: Optional[Callable[[Optional[Tuple[int, int]]], None]] = None,
+    max_passes_override: Optional[int] = None,
+    local_base_rgb: Optional[Callable[[int, int], Optional[RGB]]] = None,
 ) -> bool:
     """Verify outline pixels are painted correctly; repaint misses if needed.
 
@@ -564,9 +566,19 @@ def _verify_outline_then_repair(
 
     tol = int(getattr(cfg, "verify_tolerance", 35))
     tol2 = max(0, tol) ** 2
+    # When verifying that outline pixels are NOT the base fill color, we want
+    # a stricter "base similarity" threshold; otherwise a large verify tolerance
+    # can cause false failures if the outline shade is somewhat close to the base.
+    base_tol = max(8, int(tol * 0.5))
+    base_tol2 = max(0, base_tol) ** 2
     settle_s = max(0.0, float(getattr(cfg, "verify_settle_s", 0.05)))
     # Outline verification is just for spill safety; keep it bounded.
     max_passes = max(1, min(5, int(getattr(cfg, "verify_max_passes", 10))))
+    if max_passes_override is not None:
+        try:
+            max_passes = max(1, int(max_passes_override))
+        except Exception:
+            pass
 
     coords = list(outline_coords)
     coords.sort(key=lambda xy: (xy[1], xy[0]))
@@ -596,9 +608,25 @@ def _verify_outline_then_repair(
             actual = get_screen_pixel_rgb(cx, cy)
 
             if avoid_rgb is not None:
-                # Mismatch if the outline pixel still looks like base fill.
-                if _dist2(actual, avoid_rgb) <= tol2:
-                    mism.append((x, y))
+                base_ref = None
+                if local_base_rgb is not None:
+                    try:
+                        base_ref = local_base_rgb(int(x), int(y))
+                    except Exception:
+                        base_ref = None
+                if base_ref is None:
+                    base_ref = avoid_rgb
+                # Primary goal: outline should not look like base.
+                # If expected_rgb is provided too, use it to disambiguate when the
+                # outline shade is close to the base shade (avoid false mismatches).
+                looks_like_base = _dist2(actual, base_ref) <= base_tol2
+                if expected_rgb is not None:
+                    looks_like_expected = _dist2(actual, expected_rgb) <= tol2
+                    if looks_like_base and (not looks_like_expected):
+                        mism.append((x, y))
+                else:
+                    if looks_like_base:
+                        mism.append((x, y))
             else:
                 # Fallback: mismatch if pixel doesn't match expected.
                 if expected_rgb is None:
@@ -611,16 +639,18 @@ def _verify_outline_then_repair(
             return True
 
         # Repaint just the mismatched outline pixels.
-        _paint_coord_runs(
-            cfg=cfg,
-            canvas_rect=canvas_rect,
-            grid_w=grid_w,
-            grid_h=grid_h,
-            coords=mism,
-            options=options,
-            progress_cb=None,
-            should_stop=should_stop,
-        )
+        # Use reliable click taps (double-tap) rather than strokes.
+        try:
+            if cfg.paint_tool_button_pos is not None:
+                _tap(cfg.paint_tool_button_pos, options)
+        except Exception:
+            pass
+        for x, y in mism:
+            if should_stop and should_stop():
+                return False
+            cx, cy = _cell_center(canvas_rect, grid_w, grid_h, int(x), int(y))
+            _tap((cx, cy), options)
+            _tap((cx, cy), options, extra_delay_s=0.01)
 
     _maybe_emit_verify(verify_cb, None, 0, every=1)
     return False
@@ -1278,6 +1308,33 @@ def _paint_grid_by_color(
         key=lambda t: (-len(t[2]), t[0].name, t[1].pos[0], t[1].pos[1]),
     )
 
+    def _sample_base_rgb() -> Optional[RGB]:
+        # Sample a few points inside the canvas and take per-channel median.
+        try:
+            x0, y0, w, h = canvas_rect
+            pts = [
+                (int(x0 + w * 0.50), int(y0 + h * 0.50)),
+                (int(x0 + w * 0.35), int(y0 + h * 0.35)),
+                (int(x0 + w * 0.65), int(y0 + h * 0.35)),
+                (int(x0 + w * 0.35), int(y0 + h * 0.65)),
+                (int(x0 + w * 0.65), int(y0 + h * 0.65)),
+            ]
+            rgbs: List[RGB] = []
+            for px, py in pts:
+                try:
+                    rgbs.append(get_screen_pixel_rgb(int(px), int(py)))
+                except Exception:
+                    continue
+            if not rgbs:
+                return None
+            rs = sorted(c[0] for c in rgbs)
+            gs = sorted(c[1] for c in rgbs)
+            bs = sorted(c[2] for c in rgbs)
+            mid = len(rgbs) // 2
+            return (int(rs[mid]), int(gs[mid]), int(bs[mid]))
+        except Exception:
+            return None
+
     # Optional bucket-fill: fill entire canvas with the most-used shade and then
     # skip painting that shade.
     bucket_key: Optional[Tuple[str, Point]] = None
@@ -1307,7 +1364,9 @@ def _paint_grid_by_color(
                 should_stop=should_stop,
             )
             bucket_key = (main0.name, shade0.pos)
-            base_rgb = shade0.rgb
+            # Use the actual on-screen base color for region-fill outline verification.
+            # Palette RGBs can differ from rendered RGBs in-game.
+            base_rgb = _sample_base_rgb() or shade0.rgb
             if bucket_base_cb is not None:
                 try:
                     bucket_base_cb(
@@ -1342,6 +1401,7 @@ def _paint_grid_by_color(
         and cfg.bucket_tool_button_pos is not None
     )
     regions_min_cells = max(0, int(getattr(cfg, "bucket_fill_regions_min_cells", 200)))
+    disable_regions_for_rest = False
 
     if allow_region_bucket_fill and bool(getattr(cfg, "bucket_fill_regions_enabled", False)) and bucket_key is not None:
         if cfg.paint_tool_button_pos is None or cfg.bucket_tool_button_pos is None:
@@ -1362,6 +1422,8 @@ def _paint_grid_by_color(
     verify_tol = int(getattr(cfg, "verify_tolerance", 35))
     verify_tol2 = max(0, verify_tol) ** 2
     verify_i = 0
+    verify_settle_s = max(0.0, float(getattr(cfg, "verify_settle_s", 0.05)))
+    verify_settle_s = min(0.10, verify_settle_s)
 
     for main, shade, coords in ordered:
         if should_stop and should_stop():
@@ -1389,7 +1451,7 @@ def _paint_grid_by_color(
         # If enabled, bucket-fill large connected regions by outlining first.
         # This is very fast when the canvas currently has a uniform base color.
         remaining = coords
-        if regions_enabled and regions_min_cells > 0 and len(coords) >= regions_min_cells:
+        if regions_enabled and (not disable_regions_for_rest) and regions_min_cells > 0 and len(coords) >= regions_min_cells:
             coord_set = set(coords)
 
             bucketed: set[Tuple[int, int]] = set()
@@ -1451,32 +1513,156 @@ def _paint_grid_by_color(
                         status_cb(f"Region fill: outlining {len(boundary)} px, filling {len(comp)} px…")
                     except Exception:
                         pass
-                _tap(cfg.paint_tool_button_pos, options)
+                # Close the shades panel before painting/verifying on the canvas.
+                # Some UI layouts can overlay the canvas and cause clicks to miss.
+                if in_shades_panel and cfg.back_button_pos is not None:
+                    try:
+                        _tap(cfg.back_button_pos, options)
+                        in_shades_panel = False
+                    except Exception:
+                        pass
+
+                # For outline safety clicks, prefer slightly slower, click-only timing.
+                outline_opts = PainterOptions(
+                    move_duration_s=float(options.move_duration_s),
+                    mouse_down_s=max(float(options.mouse_down_s), 0.02),
+                    after_click_delay_s=max(float(options.after_click_delay_s), 0.02),
+                    panel_open_delay_s=float(options.panel_open_delay_s),
+                    shade_select_delay_s=float(options.shade_select_delay_s),
+                    row_delay_s=float(options.row_delay_s),
+                    enable_drag_strokes=False,
+                    drag_step_duration_s=float(options.drag_step_duration_s),
+                    after_drag_delay_s=float(options.after_drag_delay_s),
+                )
+
+                _tap(cfg.paint_tool_button_pos, outline_opts)
+
+                # Optional: stream-verify the outline while painting it, to reduce
+                # expensive post-pass outline verification.
+                outline_streaming = bool(getattr(cfg, "verify_streaming_enabled", False))
+                outline_lag = max(0, int(getattr(cfg, "verify_streaming_lag", 10)))
+                outline_lag = min(outline_lag, 60)
+                outline_queue = deque()  # (x, y, t_painted)
+                outline_verify_settle_s = max(0.0, float(getattr(cfg, "verify_settle_s", 0.05)))
+                outline_verify_settle_s = min(0.10, outline_verify_settle_s)
+
+                # Local base sampler: sample a neighbor just outside the component.
+                # This is much more reliable than a single global base_rgb.
+                local_base_cache: Dict[Tuple[int, int], RGB] = {}
+
+                def _local_base_rgb(px: int, py: int) -> Optional[RGB]:
+                    key = (int(px), int(py))
+                    if key in local_base_cache:
+                        return local_base_cache[key]
+                    try:
+                        for nx, ny in ((px - 1, py), (px + 1, py), (px, py - 1), (px, py + 1)):
+                            if (nx, ny) not in comp_set:
+                                cx2, cy2 = _cell_center(canvas_rect, grid_w, grid_h, int(nx), int(ny))
+                                rgb2 = get_screen_pixel_rgb(cx2, cy2)
+                                local_base_cache[key] = rgb2
+                                return rgb2
+                    except Exception:
+                        return base_rgb
+                    return base_rgb
+
+                def _outline_flush(force: bool = False, max_steps: int = 2) -> None:
+                    if not outline_streaming:
+                        return
+                    steps = 0
+                    while outline_queue and (force or len(outline_queue) > outline_lag):
+                        if not force and steps >= max(1, int(max_steps)):
+                            break
+                        if should_stop and should_stop():
+                            return
+                        ox, oy, t_painted = outline_queue[0]
+                        if outline_verify_settle_s > 0:
+                            now = time.time()
+                            ready_in = (float(t_painted) + outline_verify_settle_s) - now
+                            if ready_in > 0:
+                                if not force:
+                                    break
+                                if not _sleep_with_stop(min(0.02, ready_in), should_stop=should_stop):
+                                    return
+                                continue
+                        ox, oy, _t = outline_queue.popleft()
+                        cx, cy = _cell_center(canvas_rect, grid_w, grid_h, int(ox), int(oy))
+                        try:
+                            actual = get_screen_pixel_rgb(cx, cy)
+                        except Exception:
+                            steps += 1
+                            continue
+                        # Consider it bad only if it still looks like local base AND not like expected shade.
+                        tol = int(getattr(cfg, "verify_tolerance", 35))
+                        base_tol = max(8, int(tol * 0.5))
+                        base_tol2 = max(0, base_tol) ** 2
+                        tol2 = max(0, int(tol)) ** 2
+                        base_ref = _local_base_rgb(int(ox), int(oy))
+                        if base_ref is not None:
+                            looks_like_base = _dist2(actual, base_ref) <= base_tol2
+                            looks_like_expected = _dist2(actual, shade.rgb) <= tol2
+                            if looks_like_base and (not looks_like_expected):
+                                _tap((cx, cy), outline_opts)
+                                _tap((cx, cy), outline_opts, extra_delay_s=0.01)
+                        steps += 1
+
+                def _outline_progress(x: int, y: int) -> None:
+                    if not outline_streaming:
+                        return
+                    outline_queue.append((int(x), int(y), time.time()))
+                    backlog = len(outline_queue) - outline_lag
+                    if backlog > 40:
+                        step_n = 6
+                    elif backlog > 20:
+                        step_n = 3
+                    else:
+                        step_n = 1
+                    _outline_flush(force=False, max_steps=step_n)
+
                 _paint_coord_runs(
                     cfg=cfg,
                     canvas_rect=canvas_rect,
                     grid_w=grid_w,
                     grid_h=grid_h,
                     coords=boundary,
-                    options=options,
-                    progress_cb=None,
+                    options=outline_opts,
+                    progress_cb=_outline_progress if outline_streaming else None,
                     should_stop=should_stop,
                 )
 
+                if outline_streaming:
+                    _outline_flush(force=True, max_steps=999999)
+
                 # Verify the outline before bucket-fill to reduce spill risk.
-                if not _verify_outline_then_repair(
+                outline_ok = _verify_outline_then_repair(
                     cfg=cfg,
                     canvas_rect=canvas_rect,
                     grid_w=grid_w,
                     grid_h=grid_h,
                     outline_coords=boundary,
-                    expected_rgb=None,
+                    expected_rgb=shade.rgb,
                     avoid_rgb=base_rgb,
-                    options=options,
+                    options=outline_opts,
                     should_stop=should_stop,
                     status_cb=status_cb,
                     verify_cb=verify_cb,
-                ):
+                    max_passes_override=1 if outline_streaming else None,
+                    local_base_rgb=_local_base_rgb,
+                )
+
+                # If outline didn't verify, we can still attempt a cautious fill
+                # for large, high-contrast regions. We'll run quick spill checks
+                # afterwards; if spill is detected, we disable further region fills.
+                try:
+                    contrast2 = _dist2(shade.rgb, base_rgb) if base_rgb is not None else 0
+                except Exception:
+                    contrast2 = 0
+                allow_cautious_fill = (
+                    (not outline_ok)
+                    and (base_rgb is not None)
+                    and (len(comp) >= max(regions_min_cells, 600))
+                    and (contrast2 >= 120 * 120)
+                )
+                if (not outline_ok) and (not allow_cautious_fill):
                     # Can't guarantee a sealed boundary; skip bucket-fill for safety.
                     comps_outline_fail += 1
                     if status_cb is not None:
@@ -1485,6 +1671,11 @@ def _paint_grid_by_color(
                         except Exception:
                             pass
                     continue
+                if (not outline_ok) and allow_cautious_fill and status_cb is not None:
+                    try:
+                        status_cb("Outline didn't verify; attempting cautious region fill with spill checks…")
+                    except Exception:
+                        pass
 
                 if should_stop and should_stop():
                     return
@@ -1515,6 +1706,11 @@ def _paint_grid_by_color(
                 # Bucket-fill each enclosed interior subregion.
                 tol = int(getattr(cfg, "verify_tolerance", 35))
                 tol2 = max(0, tol) ** 2
+                # Base similarity should be stricter than general verify tolerance.
+                # If verify_tolerance is high, using it here can cause false "no effect"
+                # results even when the bucket fill succeeded.
+                base_tol = max(8, int(tol * 0.5))
+                base_tol2 = max(0, base_tol) ** 2
                 settle_s = max(0.0, float(getattr(cfg, "verify_settle_s", 0.05)))
 
                 _tap(cfg.bucket_tool_button_pos, options)
@@ -1522,6 +1718,7 @@ def _paint_grid_by_color(
 
                 regions_total += len(interior_components)
                 filled_any = False
+                spill_detected = False
                 for sub in interior_components:
                     if should_stop and should_stop():
                         return
@@ -1538,13 +1735,52 @@ def _paint_grid_by_color(
                     if base_rgb is not None:
                         cx, cy = _cell_center(canvas_rect, grid_w, grid_h, fx, fy)
                         actual = get_screen_pixel_rgb(cx, cy)
-                        if _dist2(actual, base_rgb) <= tol2:
+                        if _dist2(actual, base_rgb) <= base_tol2:
                             ok = False
 
                     if ok:
                         filled_any = True
                         regions_filled += 1
                         filled_cells |= set(sub)
+
+                        if allow_cautious_fill:
+                            # Spill check: sample a few neighbor cells just outside the component.
+                            # If any are no longer close to base, consider it spill.
+                            samples = 0
+                            changed = 0
+                            # Deterministic sampling: a few boundary pixels spread out.
+                            stride = max(1, len(boundary) // 7)
+                            for bi in range(0, len(boundary), stride):
+                                if samples >= 6:
+                                    break
+                                bx, by = boundary[bi]
+                                # Find an outside neighbor.
+                                out_pt = None
+                                for nx, ny in ((bx - 1, by), (bx + 1, by), (bx, by - 1), (bx, by + 1)):
+                                    if (nx, ny) not in comp_set:
+                                        out_pt = (nx, ny)
+                                        break
+                                if out_pt is None:
+                                    continue
+                                ox, oy = out_pt
+                                cx2, cy2 = _cell_center(canvas_rect, grid_w, grid_h, int(ox), int(oy))
+                                try:
+                                    a2 = get_screen_pixel_rgb(cx2, cy2)
+                                except Exception:
+                                    continue
+                                samples += 1
+                                if base_rgb is not None and _dist2(a2, base_rgb) > base_tol2:
+                                    changed += 1
+                            if samples > 0 and changed > 0:
+                                spill_detected = True
+                                if status_cb is not None:
+                                    try:
+                                        status_cb(
+                                            f"Region fill spill detected (outside changed {changed}/{samples}); disabling further region fills"
+                                        )
+                                    except Exception:
+                                        pass
+                                break
 
                 _tap(cfg.paint_tool_button_pos, options)
 
@@ -1561,6 +1797,12 @@ def _paint_grid_by_color(
                             status_cb("Region fill warning: fill click(s) had no effect; painting region normally")
                         except Exception:
                             pass
+
+                if spill_detected:
+                    disable_regions_for_rest = True
+                    # Don't trust subsequent region fills; leave remaining for normal painting.
+                    # We also stop processing more components of this shade.
+                    break
 
             if status_cb is not None:
                 try:
@@ -1601,7 +1843,7 @@ def _paint_grid_by_color(
 
         # Streaming verify for this shade: verify a few cells behind as we paint,
         # then flush at the end of the shade.
-        verify_queue = deque()  # (x, y)
+        verify_queue = deque()  # (x, y, t_painted)
 
         def flush_verify(force: bool = False, max_steps: int = 1) -> None:
             nonlocal verify_i
@@ -1613,7 +1855,19 @@ def _paint_grid_by_color(
                     break
                 if should_stop and should_stop():
                     return
-                x, y = verify_queue.popleft()
+                x, y, t_painted = verify_queue[0]
+                # Don't verify too early; let the game render the paint.
+                if verify_settle_s > 0:
+                    now = time.time()
+                    ready_in = (float(t_painted) + verify_settle_s) - now
+                    if ready_in > 0:
+                        if not force:
+                            break
+                        # Force-flush: wait a tiny amount and keep going.
+                        if not _sleep_with_stop(min(0.02, ready_in), should_stop=should_stop):
+                            return
+                        continue
+                x, y, _t = verify_queue.popleft()
                 cx, cy = _cell_center(canvas_rect, grid_w, grid_h, int(x), int(y))
                 verify_i += 1
                 _maybe_emit_verify(verify_cb, (int(x), int(y)), verify_i, every=1)
@@ -1627,6 +1881,7 @@ def _paint_grid_by_color(
                     continue
                 # Mismatch: we expect the currently-selected shade, so just tap again.
                 _tap((cx, cy), options)
+                _tap((cx, cy), options, extra_delay_s=0.01)
                 if progress_cb:
                     progress_cb(int(x), int(y))
                 steps += 1
@@ -1645,7 +1900,7 @@ def _paint_grid_by_color(
             if progress_cb:
                 progress_cb(int(x), int(y))
             if streaming:
-                verify_queue.append((int(x), int(y)))
+                verify_queue.append((int(x), int(y), time.time()))
                 backlog = len(verify_queue) - lag
                 # Adaptive: if verification is falling behind, verify a bit more per paint click
                 # to avoid large end-of-shade flush pauses.
