@@ -65,6 +65,17 @@ class AppConfig:
     verify_max_passes: int = 10
     verify_settle_s: float = 0.05
 
+    # Optional: verify while painting by checking cells a few clicks behind.
+    # This can catch missed clicks sooner and reduce long verify loops.
+    verify_streaming_enabled: bool = False
+    verify_streaming_lag: int = 10
+
+    # Optional: if verification appears stuck (no improvement), auto-recover by
+    # resyncing UI state and skipping the failing verify segment instead of
+    # raising an error.
+    verify_auto_recover_loops: bool = False
+    verify_auto_recover_after_passes: int = 2
+
     # Optional: show an always-on-top, click-through status overlay over the game
     # during painting/verification.
     status_overlay_enabled: bool = True
@@ -202,6 +213,22 @@ class AppConfig:
         except Exception:
             pass
         cfg.verify_settle_s = to_float(data.get("verify_settle_s"), cfg.verify_settle_s)
+
+        cfg.verify_streaming_enabled = bool(data.get("verify_streaming_enabled", cfg.verify_streaming_enabled))
+        try:
+            cfg.verify_streaming_lag = int(data.get("verify_streaming_lag", cfg.verify_streaming_lag))
+        except Exception:
+            pass
+
+        cfg.verify_auto_recover_loops = bool(
+            data.get("verify_auto_recover_loops", cfg.verify_auto_recover_loops)
+        )
+        try:
+            cfg.verify_auto_recover_after_passes = int(
+                data.get("verify_auto_recover_after_passes", cfg.verify_auto_recover_after_passes)
+            )
+        except Exception:
+            pass
 
         cfg.status_overlay_enabled = bool(data.get("status_overlay_enabled", cfg.status_overlay_enabled))
 

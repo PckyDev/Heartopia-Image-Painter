@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 import time
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
@@ -110,6 +111,7 @@ def _rapid_click_stroke(
     points: List[Point],
     opts: PainterOptions,
     should_stop: Optional[Callable[[], bool]] = None,
+    on_point: Optional[Callable[[int], None]] = None,
 ) -> None:
     """Fast, reliable stroke: click every point in a run with reduced delays.
 
@@ -125,7 +127,7 @@ def _rapid_click_stroke(
     per_click_delay = max(0.0, float(opts.drag_step_duration_s))
     after_stroke_delay = max(0.0, float(opts.after_drag_delay_s))
 
-    for (px, py) in points:
+    for idx, (px, py) in enumerate(points):
         if should_stop and should_stop():
             return
         # Move as fast as possible; rely on per-click delay for stability.
@@ -136,6 +138,11 @@ def _rapid_click_stroke(
         pyautogui.mouseUp(button="left")
         if per_click_delay > 0:
             time.sleep(per_click_delay)
+        if on_point:
+            try:
+                on_point(idx)
+            except Exception:
+                pass
 
     if after_stroke_delay > 0:
         time.sleep(after_stroke_delay)
@@ -375,16 +382,12 @@ def _select_shade(
 
     # Select main if needed
     if last_main is None or main.name != last_main.name:
-        # Defensive: when switching main colors, ALWAYS try to return to the main
-        # palette first. If a previous Back click failed to register, our
-        # in_shades_panel flag may be False while the UI is still in the shades
-        # panel (which causes main-color clicks to hit the wrong UI).
-        if last_main is not None:
-            _tap(cfg.back_button_pos, options)
-            in_shades_panel = False
-        elif in_shades_panel:
-            _tap(cfg.back_button_pos, options)
-            in_shades_panel = False
+        # Defensive: ALWAYS attempt to return to the main palette before
+        # selecting a main color. Our in_shades_panel flag can get out of sync
+        # if a Back click didn't register, which causes main-color clicks to hit
+        # the wrong UI and can create verification loops.
+        _tap(cfg.back_button_pos, options)
+        in_shades_panel = False
         _tap(main.pos, options)
         _tap(cfg.shades_panel_button_pos, options, extra_delay_s=options.panel_open_delay_s)
         in_shades_panel = True
@@ -509,16 +512,24 @@ def _paint_coord_runs(
             pts.append((cx, cy))
 
         if options.enable_drag_strokes and len(pts) >= 2:
-            _rapid_click_stroke(pts, options, should_stop=should_stop)
+            if progress_cb:
+                def _on_point(idx: int) -> None:
+                    try:
+                        rx, ry = run[idx]
+                    except Exception:
+                        return
+                    progress_cb(int(rx), int(ry))
+
+                _rapid_click_stroke(pts, options, should_stop=should_stop, on_point=_on_point)
+            else:
+                _rapid_click_stroke(pts, options, should_stop=should_stop)
         else:
-            for p in pts:
+            for (rx, ry), p in zip(run, pts):
                 if should_stop and should_stop():
                     return
                 _tap(p, options)
-
-        if progress_cb:
-            for rx, ry in run:
-                progress_cb(rx, ry)
+                if progress_cb:
+                    progress_cb(int(rx), int(ry))
 
         i = j
 
@@ -637,6 +648,9 @@ def _verify_and_repair_row(
     max_passes = max(1, int(getattr(cfg, "verify_max_passes", 10)))
     settle_s = max(0.0, float(getattr(cfg, "verify_settle_s", 0.05)))
 
+    prev_mismatch_n: Optional[int] = None
+    stagnant_passes = 0
+
     for _pass in range(max_passes):
         if should_stop and should_stop():
             return
@@ -671,6 +685,31 @@ def _verify_and_repair_row(
             groups[key][2].append(x)
 
         if not groups:
+            _maybe_emit_verify(verify_cb, None, 0, every=1)
+            return
+
+        mismatch_n = sum(len(t[2]) for t in groups.values())
+        if prev_mismatch_n is not None:
+            if mismatch_n >= prev_mismatch_n:
+                stagnant_passes += 1
+            else:
+                stagnant_passes = 0
+        prev_mismatch_n = mismatch_n
+
+        if stagnant_passes >= max(1, int(getattr(cfg, "verify_auto_recover_after_passes", 2))) and bool(
+            getattr(cfg, "verify_auto_recover_loops", False)
+        ):
+            if status_cb is not None:
+                try:
+                    status_cb("Verify loop detected; resyncing UI and continuing…")
+                except Exception:
+                    pass
+            # Resync palette state.
+            try:
+                _tap(cfg.back_button_pos, options)
+                _tap(cfg.back_button_pos, options)
+            except Exception:
+                pass
             _maybe_emit_verify(verify_cb, None, 0, every=1)
             return
 
@@ -733,6 +772,19 @@ def _verify_and_repair_row(
     _maybe_emit_verify(verify_cb, None, 0, every=1)
 
     # If we get here, verification never converged.
+    if bool(getattr(cfg, "verify_auto_recover_loops", False)):
+        if status_cb is not None:
+            try:
+                status_cb("Verify did not converge; skipping and continuing…")
+            except Exception:
+                pass
+        _maybe_emit_verify(verify_cb, None, 0, every=1)
+        try:
+            _tap(cfg.back_button_pos, options)
+        except Exception:
+            pass
+        return
+
     raise RuntimeError(
         f"Row verification failed (row {y+1}/{grid_h}). "
         f"Try increasing Verify tolerance or timing, or disable verification."
@@ -845,6 +897,19 @@ def _verify_and_repair_color_group(
 
             i = j
 
+    if bool(getattr(cfg, "verify_auto_recover_loops", False)):
+        if status_cb is not None:
+            try:
+                status_cb("Verify did not converge for a color; skipping and continuing…")
+            except Exception:
+                pass
+        _maybe_emit_verify(verify_cb, None, 0, every=1)
+        try:
+            _tap(cfg.back_button_pos, options)
+        except Exception:
+            pass
+        return
+
     raise RuntimeError(
         "Color verification failed for a shade group. "
         "Try increasing Verify tolerance or timing, or disable verification."
@@ -923,6 +988,51 @@ def paint_grid(
     last_main: Optional[MainColor] = None
     last_shade: Optional[ShadeButton] = None
     in_shades_panel = False
+
+    # Optional streaming verification (verify a few cells behind while painting).
+    streaming = bool(getattr(cfg, "verify_streaming_enabled", False)) and bool(getattr(cfg, "verify_rows", True))
+    lag = max(0, int(getattr(cfg, "verify_streaming_lag", 10)))
+    # Clamp lag to something sensible so it doesn't appear "stuck".
+    lag = min(lag, 200)
+    verify_tol = int(getattr(cfg, "verify_tolerance", 35))
+    verify_tol2 = max(0, verify_tol) ** 2
+    verify_queue = deque()  # (x, y, main, shade)
+    verify_i = 0
+
+    def _stream_verify_flush(force: bool = False) -> None:
+        nonlocal last_main, last_shade, in_shades_panel, verify_i
+        if not streaming:
+            return
+        while verify_queue and (force or len(verify_queue) > lag):
+            if should_stop and should_stop():
+                return
+            x, y, main, shade = verify_queue.popleft()
+            cx, cy = _cell_center(canvas_rect, grid_w, grid_h, int(x), int(y))
+            verify_i += 1
+            # Always update the cursor so streaming verify is visible.
+            _maybe_emit_verify(verify_cb, (int(x), int(y)), verify_i, every=1)
+            try:
+                actual = get_screen_pixel_rgb(cx, cy)
+            except Exception:
+                continue
+            if _dist2(actual, shade.rgb) <= verify_tol2:
+                continue
+
+            # Mismatch: select the expected shade and repaint this cell.
+            last_main, last_shade, in_shades_panel = _select_shade(
+                cfg=cfg,
+                options=options,
+                main=main,
+                shade=shade,
+                last_main=last_main,
+                last_shade=last_shade,
+                in_shades_panel=in_shades_panel,
+            )
+            _tap((cx, cy), options)
+            if progress_cb:
+                progress_cb(int(x), int(y))
+
+        _maybe_emit_verify(verify_cb, None, 0, every=1)
 
     # Cache best-match results for repeated RGBs.
     match_cache: Dict[RGB, Optional[Tuple[MainColor, ShadeButton]]] = {}
@@ -1027,23 +1137,15 @@ def paint_grid(
                 run_end += 1
 
             # Select main color if changed
-            if last_main is None or main.name != last_main.name:
-                if in_shades_panel:
-                    _tap(cfg.back_button_pos, options)
-                    in_shades_panel = False
-                _tap(main.pos, options)
-                _tap(cfg.shades_panel_button_pos, options, extra_delay_s=options.panel_open_delay_s)
-                in_shades_panel = True
-                last_main = main
-                last_shade = None
-
-            if not in_shades_panel:
-                _tap(cfg.shades_panel_button_pos, options, extra_delay_s=options.panel_open_delay_s)
-                in_shades_panel = True
-
-            if last_shade is None or shade.pos != last_shade.pos:
-                _tap(shade.pos, options, extra_delay_s=options.shade_select_delay_s)
-                last_shade = shade
+            last_main, last_shade, in_shades_panel = _select_shade(
+                cfg=cfg,
+                options=options,
+                main=main,
+                shade=shade,
+                last_main=last_main,
+                last_shade=last_shade,
+                in_shades_panel=in_shades_panel,
+            )
 
             # Paint run
             run_len = run_end - run_start + 1
@@ -1057,6 +1159,10 @@ def paint_grid(
                 if progress_cb:
                     for xx in range(run_start, run_end + 1):
                         progress_cb(xx, y)
+                if streaming:
+                    for xx in range(run_start, run_end + 1):
+                        verify_queue.append((int(xx), int(y), main, shade))
+                    _stream_verify_flush(force=False)
             else:
                 for xx in range(run_start, run_end + 1):
                     cx = int(x0 + (xx + 0.5) * cell_w)
@@ -1064,30 +1170,37 @@ def paint_grid(
                     _tap((cx, cy), options)
                     if progress_cb:
                         progress_cb(xx, y)
+                    if streaming:
+                        verify_queue.append((int(xx), int(y), main, shade))
+                        _stream_verify_flush(force=False)
 
             x = run_end + 1
 
-        # Verify the row after it's been attempted once.
-        row_expected: List[Optional[Tuple[MainColor, ShadeButton]]] = [None] * grid_w
-        for xx in range(grid_w):
-            if skip is not None and skip(xx, y):
-                row_expected[xx] = None
-                continue
-            m = get_match(get_pixel(xx, y))
-            row_expected[xx] = m
-        _verify_and_repair_row(
-            cfg=cfg,
-            canvas_rect=canvas_rect,
-            grid_w=grid_w,
-            grid_h=grid_h,
-            y=y,
-            row_expected=row_expected,
-            options=options,
-            progress_cb=progress_cb,
-            should_stop=should_stop,
-            status_cb=status_cb,
-            verify_cb=verify_cb,
-        )
+        if streaming:
+            # Flush remaining lagging checks for this row.
+            _stream_verify_flush(force=True)
+        else:
+            # Verify the row after it's been attempted once.
+            row_expected: List[Optional[Tuple[MainColor, ShadeButton]]] = [None] * grid_w
+            for xx in range(grid_w):
+                if skip is not None and skip(xx, y):
+                    row_expected[xx] = None
+                    continue
+                m = get_match(get_pixel(xx, y))
+                row_expected[xx] = m
+            _verify_and_repair_row(
+                cfg=cfg,
+                canvas_rect=canvas_rect,
+                grid_w=grid_w,
+                grid_h=grid_h,
+                y=y,
+                row_expected=row_expected,
+                options=options,
+                progress_cb=progress_cb,
+                should_stop=should_stop,
+                status_cb=status_cb,
+                verify_cb=verify_cb,
+            )
 
         if options.row_delay_s > 0:
             if not _sleep_with_stop(options.row_delay_s, should_stop=should_stop):
@@ -1241,6 +1354,14 @@ def _paint_grid_by_color(
     last_main: Optional[MainColor] = None
     last_shade: Optional[ShadeButton] = None
     in_shades_panel = False
+
+    # Optional streaming verification for Paint-by-Color.
+    streaming = bool(getattr(cfg, "verify_streaming_enabled", False)) and bool(getattr(cfg, "verify_rows", True))
+    lag = max(0, int(getattr(cfg, "verify_streaming_lag", 10)))
+    lag = min(lag, 200)
+    verify_tol = int(getattr(cfg, "verify_tolerance", 35))
+    verify_tol2 = max(0, verify_tol) ** 2
+    verify_i = 0
 
     for main, shade, coords in ordered:
         if should_stop and should_stop():
@@ -1468,9 +1589,74 @@ def _paint_grid_by_color(
         # Prefer horizontal strokes across adjacent pixels (same shade).
         if status_cb is not None:
             try:
-                status_cb(f"Painting shade: {main.name}/{shade.name} ({len(remaining)} px) …")
+                if streaming:
+                    status_cb(
+                        f"Painting shade: {main.name}/{shade.name} ({len(remaining)} px) … "
+                        f"[stream verify lag={lag}]"
+                    )
+                else:
+                    status_cb(f"Painting shade: {main.name}/{shade.name} ({len(remaining)} px) …")
             except Exception:
                 pass
+
+        # Streaming verify for this shade: verify a few cells behind as we paint,
+        # then flush at the end of the shade.
+        verify_queue = deque()  # (x, y)
+
+        def flush_verify(force: bool = False, max_steps: int = 1) -> None:
+            nonlocal verify_i
+            if not streaming:
+                return
+            steps = 0
+            while verify_queue and (force or len(verify_queue) > lag):
+                if not force and steps >= max(1, int(max_steps)):
+                    break
+                if should_stop and should_stop():
+                    return
+                x, y = verify_queue.popleft()
+                cx, cy = _cell_center(canvas_rect, grid_w, grid_h, int(x), int(y))
+                verify_i += 1
+                _maybe_emit_verify(verify_cb, (int(x), int(y)), verify_i, every=1)
+                try:
+                    actual = get_screen_pixel_rgb(cx, cy)
+                except Exception:
+                    steps += 1
+                    continue
+                if _dist2(actual, shade.rgb) <= verify_tol2:
+                    steps += 1
+                    continue
+                # Mismatch: we expect the currently-selected shade, so just tap again.
+                _tap((cx, cy), options)
+                if progress_cb:
+                    progress_cb(int(x), int(y))
+                steps += 1
+            if force:
+                # If this takes a while, keep the user informed in the status overlay.
+                if status_cb is not None:
+                    try:
+                        status_cb(
+                            f"Streaming verify flush: {main.name}/{shade.name} … remaining={len(verify_queue)}"
+                        )
+                    except Exception:
+                        pass
+                _maybe_emit_verify(verify_cb, None, 0, every=1)
+
+        def progress_and_stream(x: int, y: int) -> None:
+            if progress_cb:
+                progress_cb(int(x), int(y))
+            if streaming:
+                verify_queue.append((int(x), int(y)))
+                backlog = len(verify_queue) - lag
+                # Adaptive: if verification is falling behind, verify a bit more per paint click
+                # to avoid large end-of-shade flush pauses.
+                if backlog > 60:
+                    steps = 6
+                elif backlog > 30:
+                    steps = 3
+                else:
+                    steps = 1
+                flush_verify(force=False, max_steps=steps)
+
         _paint_coord_runs(
             cfg=cfg,
             canvas_rect=canvas_rect,
@@ -1478,25 +1664,30 @@ def _paint_grid_by_color(
             grid_h=grid_h,
             coords=list(remaining),
             options=options,
-            progress_cb=progress_cb,
+            progress_cb=progress_and_stream if streaming else progress_cb,
             should_stop=should_stop,
         )
 
-        # Verify this color batch after painting it (faster than waiting for row completion).
-        _verify_and_repair_color_group(
-            cfg=cfg,
-            canvas_rect=canvas_rect,
-            grid_w=grid_w,
-            grid_h=grid_h,
-            main=main,
-            shade=shade,
-            coords=list(remaining),
-            options=options,
-            progress_cb=progress_cb,
-            should_stop=should_stop,
-            status_cb=status_cb,
-            verify_cb=verify_cb,
-        )
+        if streaming:
+            flush_verify(force=True)
+
+        # If streaming is enabled, we've already been verifying/repainting as we
+        # go. Skip the heavier post-pass verification.
+        if not streaming:
+            _verify_and_repair_color_group(
+                cfg=cfg,
+                canvas_rect=canvas_rect,
+                grid_w=grid_w,
+                grid_h=grid_h,
+                main=main,
+                shade=shade,
+                coords=list(remaining),
+                options=options,
+                progress_cb=progress_cb,
+                should_stop=should_stop,
+                status_cb=status_cb,
+                verify_cb=verify_cb,
+            )
 
         # Keep UI state and our state in sync. The shades panel is typically left
         # open after selecting a shade; close it between groups so the next main

@@ -359,6 +359,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.spin_verify_passes.setSingleStep(1)
         self.spin_verify_passes.setSuffix(" passes")
 
+        self.chk_verify_streaming = QtWidgets.QCheckBox("Verify while painting (lag)")
+        self.spin_verify_lag = QtWidgets.QSpinBox()
+        self.spin_verify_lag.setRange(0, 500)
+        self.spin_verify_lag.setSingleStep(1)
+        self.spin_verify_lag.setSuffix(" cells")
+
+        self.chk_verify_auto_recover = QtWidgets.QCheckBox("Auto-recover verify loops (skip stuck verify)")
+
         self.chk_status_overlay = QtWidgets.QCheckBox("Show in-game status overlay")
 
         tlay.addWidget(QtWidgets.QLabel("Mouse move duration:"), 0, 0)
@@ -386,7 +394,13 @@ class MainWindow(QtWidgets.QMainWindow):
         tlay.addWidget(QtWidgets.QLabel("Verify max passes:"), 6, 2)
         tlay.addWidget(self.spin_verify_passes, 6, 3)
 
-        tlay.addWidget(self.chk_status_overlay, 7, 0, 1, 2)
+        tlay.addWidget(self.chk_verify_streaming, 5, 0, 1, 2)
+        tlay.addWidget(QtWidgets.QLabel("Verify lag:"), 6, 0)
+        tlay.addWidget(self.spin_verify_lag, 6, 1)
+
+        tlay.addWidget(self.chk_verify_auto_recover, 7, 2, 1, 2)
+
+        tlay.addWidget(self.chk_status_overlay, 8, 0, 1, 2)
 
         tab_timing_layout.addWidget(timing)
 
@@ -492,6 +506,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.chk_verify.stateChanged.connect(lambda _v: self._on_verify_changed())
         self.spin_verify_tol.valueChanged.connect(lambda _v: self._on_verify_changed())
         self.spin_verify_passes.valueChanged.connect(lambda _v: self._on_verify_changed())
+        self.chk_verify_streaming.stateChanged.connect(lambda _v: self._on_verify_changed())
+        self.spin_verify_lag.valueChanged.connect(lambda _v: self._on_verify_changed())
+        self.chk_verify_auto_recover.stateChanged.connect(lambda _v: self._on_verify_changed())
 
         self.chk_status_overlay.stateChanged.connect(lambda _v: self._on_status_overlay_changed())
 
@@ -598,6 +615,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.chk_verify.blockSignals(True)
         self.spin_verify_tol.blockSignals(True)
         self.spin_verify_passes.blockSignals(True)
+        self.chk_verify_streaming.blockSignals(True)
+        self.spin_verify_lag.blockSignals(True)
+        self.chk_verify_auto_recover.blockSignals(True)
         self.chk_bucket_fill.blockSignals(True)
         self.spin_bucket_min.blockSignals(True)
         self.chk_bucket_regions.blockSignals(True)
@@ -619,6 +639,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.spin_verify_tol.setValue(int(getattr(self._cfg, "verify_tolerance", 35)))
         self.spin_verify_passes.setValue(int(getattr(self._cfg, "verify_max_passes", 10)))
 
+        self.chk_verify_streaming.setChecked(bool(getattr(self._cfg, "verify_streaming_enabled", False)))
+        self.spin_verify_lag.setValue(int(getattr(self._cfg, "verify_streaming_lag", 10)))
+        self.chk_verify_auto_recover.setChecked(bool(getattr(self._cfg, "verify_auto_recover_loops", False)))
+
         self.chk_bucket_fill.setChecked(bool(getattr(self._cfg, "bucket_fill_enabled", False)))
         self.spin_bucket_min.setValue(int(getattr(self._cfg, "bucket_fill_min_cells", 50)))
 
@@ -633,6 +657,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.chk_verify.blockSignals(False)
         self.spin_verify_tol.blockSignals(False)
         self.spin_verify_passes.blockSignals(False)
+        self.chk_verify_streaming.blockSignals(False)
+        self.spin_verify_lag.blockSignals(False)
+        self.chk_verify_auto_recover.blockSignals(False)
         self.chk_bucket_fill.blockSignals(False)
         self.spin_bucket_min.blockSignals(False)
         self.chk_bucket_regions.blockSignals(False)
@@ -660,6 +687,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._cfg.verify_rows = bool(self.chk_verify.isChecked())
         self._cfg.verify_tolerance = int(self.spin_verify_tol.value())
         self._cfg.verify_max_passes = int(self.spin_verify_passes.value())
+        self._cfg.verify_streaming_enabled = bool(self.chk_verify_streaming.isChecked())
+        self._cfg.verify_streaming_lag = int(self.spin_verify_lag.value())
+        self._cfg.verify_auto_recover_loops = bool(self.chk_verify_auto_recover.isChecked())
         self._save_cfg()
 
     def _on_bucket_fill_changed(self) -> None:
