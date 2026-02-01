@@ -396,7 +396,8 @@ def _verify_outline_then_repair(
     grid_w: int,
     grid_h: int,
     outline_coords: List[Tuple[int, int]],
-    expected_rgb: RGB,
+    expected_rgb: Optional[RGB],
+    avoid_rgb: Optional[RGB],
     options: PainterOptions,
     should_stop: Optional[Callable[[], bool]] = None,
     status_cb: Optional[Callable[[str], None]] = None,
@@ -409,6 +410,12 @@ def _verify_outline_then_repair(
     """
 
     if not outline_coords:
+        return True
+
+    # For region bucket-fill spill safety, it's often more reliable to verify that
+    # outline pixels are NOT the base fill color, rather than requiring an exact
+    # match to the target shade (games can alter displayed RGB).
+    if expected_rgb is None and avoid_rgb is None:
         return True
 
     tol = int(getattr(cfg, "verify_tolerance", 35))
@@ -429,7 +436,10 @@ def _verify_outline_then_repair(
 
         if status_cb is not None:
             try:
-                status_cb(f"Verifying outline… pass {_pass+1}/{max_passes}")
+                if avoid_rgb is not None:
+                    status_cb(f"Verifying outline vs base… pass {_pass+1}/{max_passes}")
+                else:
+                    status_cb(f"Verifying outline… pass {_pass+1}/{max_passes}")
             except Exception:
                 pass
 
@@ -440,10 +450,20 @@ def _verify_outline_then_repair(
             cx, cy = _cell_center(canvas_rect, grid_w, grid_h, x, y)
             _maybe_emit_verify(verify_cb, (x, y), i, every=8)
             actual = get_screen_pixel_rgb(cx, cy)
-            if _dist2(actual, expected_rgb) > tol2:
-                mism.append((x, y))
+
+            if avoid_rgb is not None:
+                # Mismatch if the outline pixel still looks like base fill.
+                if _dist2(actual, avoid_rgb) <= tol2:
+                    mism.append((x, y))
+            else:
+                # Fallback: mismatch if pixel doesn't match expected.
+                if expected_rgb is None:
+                    continue
+                if _dist2(actual, expected_rgb) > tol2:
+                    mism.append((x, y))
 
         if not mism:
+            _maybe_emit_verify(verify_cb, None, 0, every=1)
             return True
 
         # Repaint just the mismatched outline pixels.
@@ -708,6 +728,10 @@ def paint_grid(
     paint_mode: str = "row",
     skip: Optional[Callable[[int, int], bool]] = None,
     allow_bucket_fill: bool = True,
+    allow_region_bucket_fill: bool = True,
+    resume_base_bucket_key: Optional[Tuple[str, Point]] = None,
+    resume_base_bucket_rgb: Optional[RGB] = None,
+    bucket_base_cb: Optional[Callable[[str, int, int, int, int, int], None]] = None,
     progress_cb: Optional[Callable[[int, int], None]] = None,
     should_stop: Optional[Callable[[], bool]] = None,
     status_cb: Optional[Callable[[str], None]] = None,
@@ -752,6 +776,10 @@ def paint_grid(
             options=options,
             skip=skip,
             allow_bucket_fill=allow_bucket_fill,
+            allow_region_bucket_fill=allow_region_bucket_fill,
+            resume_base_bucket_key=resume_base_bucket_key,
+            resume_base_bucket_rgb=resume_base_bucket_rgb,
+            bucket_base_cb=bucket_base_cb,
             progress_cb=progress_cb,
             should_stop=should_stop,
             status_cb=status_cb,
@@ -946,6 +974,10 @@ def _paint_grid_by_color(
     options: PainterOptions,
     skip: Optional[Callable[[int, int], bool]] = None,
     allow_bucket_fill: bool = True,
+    allow_region_bucket_fill: bool = True,
+    resume_base_bucket_key: Optional[Tuple[str, Point]] = None,
+    resume_base_bucket_rgb: Optional[RGB] = None,
+    bucket_base_cb: Optional[Callable[[str, int, int, int, int, int], None]] = None,
     progress_cb: Optional[Callable[[int, int], None]] = None,
     should_stop: Optional[Callable[[], bool]] = None,
     status_cb: Optional[Callable[[str], None]] = None,
@@ -1003,6 +1035,12 @@ def _paint_grid_by_color(
     # Optional bucket-fill: fill entire canvas with the most-used shade and then
     # skip painting that shade.
     bucket_key: Optional[Tuple[str, Point]] = None
+    base_rgb: Optional[RGB] = None
+
+    # Resume path: allow region fill without redoing the base bucket-fill.
+    if resume_base_bucket_key is not None and resume_base_bucket_rgb is not None:
+        bucket_key = resume_base_bucket_key
+        base_rgb = resume_base_bucket_rgb
     if allow_bucket_fill and bool(getattr(cfg, "bucket_fill_enabled", False)) and ordered:
         main0, shade0, coords0 = ordered[0]
         min_cells = max(0, int(getattr(cfg, "bucket_fill_min_cells", 50)))
@@ -1023,21 +1061,49 @@ def _paint_grid_by_color(
                 should_stop=should_stop,
             )
             bucket_key = (main0.name, shade0.pos)
+            base_rgb = shade0.rgb
+            if bucket_base_cb is not None:
+                try:
+                    bucket_base_cb(
+                        str(main0.name),
+                        int(shade0.pos[0]),
+                        int(shade0.pos[1]),
+                        int(base_rgb[0]),
+                        int(base_rgb[1]),
+                        int(base_rgb[2]),
+                    )
+                except Exception:
+                    pass
             # Mark these pixels as complete for progress purposes.
             if progress_cb:
                 for xx, yy in coords0:
                     progress_cb(xx, yy)
 
+    if allow_region_bucket_fill and bool(getattr(cfg, "bucket_fill_regions_enabled", False)) and bucket_key is None:
+        if status_cb is not None:
+            try:
+                status_cb("Region fill disabled (needs base bucket-fill). Lower Bucket min cells or disable region fill.")
+            except Exception:
+                pass
+
     # Optional region bucket fill (outline then fill). Only meaningful if we have a
     # base fill; otherwise bucket fill can leak into other unpainted base-colored areas.
     regions_enabled = (
-        allow_bucket_fill
+        allow_region_bucket_fill
         and bucket_key is not None
         and bool(getattr(cfg, "bucket_fill_regions_enabled", False))
         and cfg.paint_tool_button_pos is not None
         and cfg.bucket_tool_button_pos is not None
     )
     regions_min_cells = max(0, int(getattr(cfg, "bucket_fill_regions_min_cells", 200)))
+
+    if allow_region_bucket_fill and bool(getattr(cfg, "bucket_fill_regions_enabled", False)) and bucket_key is not None:
+        if cfg.paint_tool_button_pos is None or cfg.bucket_tool_button_pos is None:
+            if status_cb is not None:
+                try:
+                    status_cb("Region fill disabled (capture paint tool + bucket tool buttons first).")
+                except Exception:
+                    pass
 
     last_main: Optional[MainColor] = None
     last_shade: Optional[ShadeButton] = None
@@ -1074,6 +1140,14 @@ def _paint_grid_by_color(
 
             bucketed: set[Tuple[int, int]] = set()
 
+            comps_total = 0
+            comps_small = 0
+            comps_no_interior = 0
+            comps_outline_fail = 0
+            comps_filled = 0
+            regions_total = 0
+            regions_filled = 0
+
             while coord_set:
                 if should_stop and should_stop():
                     return
@@ -1089,7 +1163,10 @@ def _paint_grid_by_color(
                             coord_set.remove((nx, ny))
                             stack.append((nx, ny))
 
+                comps_total += 1
+
                 if len(comp) < regions_min_cells:
+                    comps_small += 1
                     continue
                 # Edge-touching components are allowed; the game canvas boundary
                 # acts as a hard stop, and we also verify the outline before
@@ -1111,6 +1188,7 @@ def _paint_grid_by_color(
 
                 if interior is None:
                     # No interior (thin shape) -> not worth bucket filling.
+                    comps_no_interior += 1
                     continue
 
                 # Outline boundary pixels with the target shade (paint tool).
@@ -1138,13 +1216,15 @@ def _paint_grid_by_color(
                     grid_w=grid_w,
                     grid_h=grid_h,
                     outline_coords=boundary,
-                    expected_rgb=shade.rgb,
+                    expected_rgb=None,
+                    avoid_rgb=base_rgb,
                     options=options,
                     should_stop=should_stop,
                     status_cb=status_cb,
                     verify_cb=verify_cb,
                 ):
                     # Can't guarantee a sealed boundary; skip bucket-fill for safety.
+                    comps_outline_fail += 1
                     if status_cb is not None:
                         try:
                             status_cb("Region fill skipped (outline didn't verify)")
@@ -1155,20 +1235,101 @@ def _paint_grid_by_color(
                 if should_stop and should_stop():
                     return
 
-                # Bucket-fill inside the outlined region.
+                boundary_set = set(boundary)
+                interior_set = set(comp_set) - boundary_set
+                if not interior_set:
+                    comps_no_interior += 1
+                    continue
+
+                # Find interior connected components (tight outlines can split interior
+                # into multiple enclosed regions that need multiple bucket clicks).
+                interior_components: List[List[Tuple[int, int]]] = []
+                while interior_set:
+                    seed = next(iter(interior_set))
+                    stack2 = [seed]
+                    interior_set.remove(seed)
+                    sub: List[Tuple[int, int]] = []
+                    while stack2:
+                        qx, qy = stack2.pop()
+                        sub.append((qx, qy))
+                        for nx, ny in ((qx - 1, qy), (qx + 1, qy), (qx, qy - 1), (qx, qy + 1)):
+                            if (nx, ny) in interior_set:
+                                interior_set.remove((nx, ny))
+                                stack2.append((nx, ny))
+                    interior_components.append(sub)
+
+                # Bucket-fill each enclosed interior subregion.
+                tol = int(getattr(cfg, "verify_tolerance", 35))
+                tol2 = max(0, tol) ** 2
+                settle_s = max(0.0, float(getattr(cfg, "verify_settle_s", 0.05)))
+
                 _tap(cfg.bucket_tool_button_pos, options)
-                fx, fy = interior
-                _tap(_cell_center(canvas_rect, grid_w, grid_h, fx, fy), options)
+                filled_cells: set[Tuple[int, int]] = set(boundary)
+
+                regions_total += len(interior_components)
+                filled_any = False
+                for sub in interior_components:
+                    if should_stop and should_stop():
+                        return
+                    if not sub:
+                        continue
+                    fx, fy = sub[0]
+                    _tap(_cell_center(canvas_rect, grid_w, grid_h, fx, fy), options)
+                    if settle_s > 0:
+                        if not _sleep_with_stop(settle_s, should_stop=should_stop):
+                            return
+
+                    ok = True
+                    # Spot-check that the click actually filled (cell should not remain base).
+                    if base_rgb is not None:
+                        cx, cy = _cell_center(canvas_rect, grid_w, grid_h, fx, fy)
+                        actual = get_screen_pixel_rgb(cx, cy)
+                        if _dist2(actual, base_rgb) <= tol2:
+                            ok = False
+
+                    if ok:
+                        filled_any = True
+                        regions_filled += 1
+                        filled_cells |= set(sub)
+
                 _tap(cfg.paint_tool_button_pos, options)
 
-                bucketed |= comp_set
+                if filled_any:
+                    comps_filled += 1
+                    bucketed |= filled_cells
+                    if progress_cb:
+                        for xx, yy in filled_cells:
+                            progress_cb(xx, yy)
+                else:
+                    # Nothing filled; leave these cells for normal painting.
+                    if status_cb is not None:
+                        try:
+                            status_cb("Region fill warning: fill click(s) had no effect; painting region normally")
+                        except Exception:
+                            pass
 
-                if progress_cb:
-                    for xx, yy in comp:
-                        progress_cb(xx, yy)
+            if status_cb is not None:
+                try:
+                    status_cb(
+                        f"Region fill summary: comps={comps_total}, filled={comps_filled}, "
+                        f"skipped_small={comps_small}, skipped_thin={comps_no_interior}, skipped_outline={comps_outline_fail}"
+                    )
+                except Exception:
+                    pass
+            if status_cb is not None and regions_total > 0:
+                try:
+                    status_cb(f"Region fill subregions: filled={regions_filled}/{regions_total}")
+                except Exception:
+                    pass
 
             if bucketed:
                 remaining = [xy for xy in coords if xy not in bucketed]
+        elif regions_enabled and regions_min_cells > 0 and len(coords) < regions_min_cells:
+            if status_cb is not None:
+                try:
+                    status_cb(f"Region fill not attempted for {main.name}/{shade.name} ({len(coords)} < {regions_min_cells})")
+                except Exception:
+                    pass
 
         # Paint remaining cells for this shade.
         # Prefer horizontal strokes across adjacent pixels (same shade).
@@ -1196,7 +1357,7 @@ def _paint_grid_by_color(
             grid_h=grid_h,
             main=main,
             shade=shade,
-            coords=coords,
+            coords=list(remaining),
             options=options,
             progress_cb=progress_cb,
             should_stop=should_stop,

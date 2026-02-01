@@ -609,10 +609,11 @@ class StatusOverlay(QtWidgets.QWidget):
         painter.setBrush(QtGui.QColor(0, 0, 0, 185))
         painter.drawRoundedRect(panel, 10, 10)
 
-        # Layout: left text, right replica canvas
+        # Layout: text above, replica canvas bottom-left (out of the way)
         left = panel.adjusted(14, 10, -14, -10)
-        canvas_box = QtCore.QRect(panel.right() - 248, panel.top() + 14, 234, 234)
-        text_box = QtCore.QRect(left.left(), left.top(), canvas_box.left() - left.left() - 12, left.height())
+        canvas_box = QtCore.QRect(panel.left() + 14, panel.bottom() - 248, 234, 234)
+        text_h = max(40, canvas_box.top() - left.top() - 10)
+        text_box = QtCore.QRect(left.left(), left.top(), left.width(), text_h)
 
         painter.setPen(QtGui.QColor(255, 255, 255, 240))
         painted_txt = ""

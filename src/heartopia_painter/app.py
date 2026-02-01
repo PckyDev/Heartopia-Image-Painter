@@ -58,6 +58,7 @@ class WorkerSignals(QtCore.QObject):
     progress = QtCore.Signal(int, int)
     status = QtCore.Signal(str)
     verify_cell = QtCore.Signal(int, int)
+    bucket_base = QtCore.Signal(str, int, int, int, int, int)
     finished = QtCore.Signal()
     error = QtCore.Signal(str)
     paused = QtCore.Signal(str)
@@ -93,6 +94,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._paint_done: set[tuple[int, int]] = set()
         self._paint_paused: bool = False
         self._paint_session_sig: Optional[tuple] = None
+        self._paint_base_bucket_key: Optional[tuple[str, tuple[int, int]]] = None
+        self._paint_base_bucket_rgb: Optional[tuple[int, int, int]] = None
 
         self._build_ui()
         self._apply_persisted_state()
@@ -155,6 +158,11 @@ class MainWindow(QtWidgets.QMainWindow):
         # so Qt can safely queue delivery onto the UI thread.
         total = int(self._paint_total) if int(self._paint_total) > 0 else 1
         self._on_progress(int(x), int(y), total)
+
+    def _on_worker_bucket_base(self, main_name: str, sx: int, sy: int, r: int, g: int, b: int) -> None:
+        # Remember the base bucket-fill shade so Resume can keep using region-fill.
+        self._paint_base_bucket_key = (str(main_name), (int(sx), int(sy)))
+        self._paint_base_bucket_rgb = (int(r), int(g), int(b))
 
     def _start_esc_listener(self) -> None:
         # Global hotkey so it works even when the game window is focused.
@@ -1189,6 +1197,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._paint_done.clear()
         self._paint_paused = False
         self._paint_session_sig = None
+        self._paint_base_bucket_key = None
+        self._paint_base_bucket_rgb = None
         self.btn_resume.setEnabled(False)
 
     def _on_progress(self, x: int, y: int, total: int):
@@ -1315,6 +1325,7 @@ class MainWindow(QtWidgets.QMainWindow):
         signals.progress.connect(self._on_worker_progress, qc)
         signals.status.connect(self._on_worker_status, qc)
         signals.verify_cell.connect(self._on_worker_verify_cell, qc)
+        signals.bucket_base.connect(self._on_worker_bucket_base, qc)
         signals.finished.connect(self._on_paint_done, qc)
         signals.error.connect(self._on_paint_error, qc)
         signals.paused.connect(self._on_paint_paused, qc)
@@ -1354,6 +1365,12 @@ class MainWindow(QtWidgets.QMainWindow):
                     except Exception:
                         pass
 
+                def bucket_base_cb(main_name: str, sx: int, sy: int, r: int, g: int, b: int) -> None:
+                    try:
+                        signals.bucket_base.emit(str(main_name), int(sx), int(sy), int(r), int(g), int(b))
+                    except Exception:
+                        pass
+
                 paint_grid(
                     cfg=self._cfg,
                     canvas_rect=self._canvas_rect,
@@ -1364,6 +1381,16 @@ class MainWindow(QtWidgets.QMainWindow):
                     paint_mode=self._cfg.paint_mode,
                     skip=skip_fn,
                     allow_bucket_fill=(not resume),
+                    allow_region_bucket_fill=(not resume) or (self._paint_base_bucket_key is not None),
+                    resume_base_bucket_key=(
+                        (self._paint_base_bucket_key[0], self._paint_base_bucket_key[1])
+                        if resume and self._paint_base_bucket_key is not None
+                        else None
+                    ),
+                    resume_base_bucket_rgb=(
+                        self._paint_base_bucket_rgb if resume and self._paint_base_bucket_rgb is not None else None
+                    ),
+                    bucket_base_cb=bucket_base_cb,
                     progress_cb=lambda x, y: signals.progress.emit(x, y),
                     should_stop=lambda: self._stop_flag,
                     status_cb=status_cb,
