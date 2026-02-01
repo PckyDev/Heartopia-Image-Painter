@@ -108,7 +108,7 @@ Speed tip:
 - This app controls your mouse and clicks on your screen.
 - A short countdown appears before painting starts so you can focus the game window.
 - PyAutoGUI failsafe is enabled: move the mouse to the **top-left corner** to abort.
-- You can also press **ESC** to request a stop while it’s painting.
+- You can also press **ESC** to pause while it’s painting (then use **Resume** in the app).
 
 ## Configuration (`config.json`)
 

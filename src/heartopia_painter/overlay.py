@@ -146,8 +146,69 @@ class RectSelectOverlay(QtWidgets.QWidget):
         dim = QtGui.QColor(0, 0, 0, dim_alpha)
         painter.fillRect(self.rect(), dim)
 
+        # Magnifier works even before dragging
+        if self._magnifier_zoom > 1 and self._mouse_pos is not None:
+            local_pt = self._mouse_pos
+            global_pt = local_pt + self._global_origin
+            screen = QtGui.QGuiApplication.screenAt(global_pt) or QtGui.QGuiApplication.primaryScreen()
+            if screen is not None:
+                sgeo = screen.geometry()
+                sx = int(global_pt.x() - sgeo.x())
+                sy = int(global_pt.y() - sgeo.y())
+                half = int(self._magnifier_src_px)
+                grab = screen.grabWindow(0, sx - half, sy - half, half * 2, half * 2)
+
+                target = QtCore.QSize(self._magnifier_box_px, self._magnifier_box_px)
+                zoomed = grab.scaled(
+                    target,
+                    QtCore.Qt.AspectRatioMode.IgnoreAspectRatio,
+                    QtCore.Qt.TransformationMode.FastTransformation,
+                )
+
+                offset = 22
+                bx = local_pt.x() + offset
+                by = local_pt.y() + offset
+                if bx + self._magnifier_box_px + 6 > self.width():
+                    bx = local_pt.x() - offset - self._magnifier_box_px
+                if by + self._magnifier_box_px + 26 > self.height():
+                    by = local_pt.y() - offset - self._magnifier_box_px
+                box = QtCore.QRect(bx, by, self._magnifier_box_px, self._magnifier_box_px)
+
+                painter.setPen(QtCore.Qt.PenStyle.NoPen)
+                painter.setBrush(QtGui.QColor(0, 0, 0, 170))
+                painter.drawRoundedRect(box.adjusted(-6, -22, 6, 6), 8, 8)
+
+                painter.drawPixmap(box.topLeft(), zoomed)
+                pen = QtGui.QPen(QtGui.QColor(255, 255, 255, 220))
+                pen.setWidth(2)
+                painter.setPen(pen)
+                painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
+                painter.drawRect(box)
+
+                cx = box.center().x()
+                cy = box.center().y()
+                pen2 = QtGui.QPen(QtGui.QColor(0, 200, 255, 230))
+                pen2.setWidth(2)
+                painter.setPen(pen2)
+                painter.drawLine(cx - 10, cy, cx + 10, cy)
+                painter.drawLine(cx, cy - 10, cx, cy + 10)
+
+                painter.setPen(QtGui.QColor(255, 255, 255, 235))
+                painter.drawText(
+                    QtCore.QRect(box.x() - 6, box.y() - 22, box.width() + 12, 18),
+                    QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter,
+                    f"Zoom {self._magnifier_zoom}x",
+                )
+
         rect = self._current_rect()
         if rect is None:
+            # Helper text when not dragging yet
+            painter.setPen(QtGui.QColor(255, 255, 255, 235))
+            painter.drawText(
+                QtCore.QRect(20, 20, 680, 40),
+                QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter,
+                f"Drag to select canvas (ESC to cancel, scroll to zoom: {self._magnifier_zoom}x)",
+            )
             return
 
         # Clear selection area a bit
@@ -155,8 +216,8 @@ class RectSelectOverlay(QtWidgets.QWidget):
         painter.fillRect(rect, QtGui.QColor(0, 0, 0, 0))
         painter.setCompositionMode(QtGui.QPainter.CompositionMode.CompositionMode_SourceOver)
 
-        # Visible selection fill (helps UX even if transparency behaves oddly)
-        painter.fillRect(rect, QtGui.QColor(0, 200, 255, 40))
+        # Very subtle selection tint (keep edges clean for alignment)
+        painter.fillRect(rect, QtGui.QColor(0, 200, 255, 12))
 
         # Preview image inside selection
         if self._preview is not None and not self._preview.isNull():
@@ -169,13 +230,6 @@ class RectSelectOverlay(QtWidgets.QWidget):
             painter.drawPixmap(rect.topLeft(), scaled)
             painter.setOpacity(1.0)
 
-        # Selection border
-        pen = QtGui.QPen(QtGui.QColor(0, 200, 255, 230))
-        pen.setWidth(2)
-        painter.setPen(pen)
-        painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
-        painter.drawRect(rect)
-
         # Helper text
         painter.setPen(QtGui.QColor(255, 255, 255, 230))
         painter.drawText(
@@ -184,64 +238,7 @@ class RectSelectOverlay(QtWidgets.QWidget):
             f"{rect.width()}x{rect.height()}  (ESC to cancel, scroll to zoom: {self._magnifier_zoom}x)",
         )
 
-        # Magnifier (if enabled)
-        if self._magnifier_zoom > 1 and self._mouse_pos is not None:
-            local_pt = self._mouse_pos
-            global_pt = local_pt + self._global_origin
-            screen = QtGui.QGuiApplication.screenAt(global_pt) or QtGui.QGuiApplication.primaryScreen()
-            if screen is not None:
-                sgeo = screen.geometry()
-                sx = int(global_pt.x() - sgeo.x())
-                sy = int(global_pt.y() - sgeo.y())
-                half = int(self._magnifier_src_px)
-                grab = screen.grabWindow(0, sx - half, sy - half, half * 2, half * 2)
-
-                # Scale up with fast/nearest transform for crisp pixel edges
-                target = QtCore.QSize(self._magnifier_box_px, self._magnifier_box_px)
-                zoomed = grab.scaled(
-                    target,
-                    QtCore.Qt.AspectRatioMode.IgnoreAspectRatio,
-                    QtCore.Qt.TransformationMode.FastTransformation,
-                )
-
-                # Place box near cursor but keep inside overlay bounds
-                offset = 22
-                bx = local_pt.x() + offset
-                by = local_pt.y() + offset
-                if bx + self._magnifier_box_px + 6 > self.width():
-                    bx = local_pt.x() - offset - self._magnifier_box_px
-                if by + self._magnifier_box_px + 26 > self.height():
-                    by = local_pt.y() - offset - self._magnifier_box_px
-                box = QtCore.QRect(bx, by, self._magnifier_box_px, self._magnifier_box_px)
-
-                # Background + border
-                painter.setPen(QtCore.Qt.PenStyle.NoPen)
-                painter.setBrush(QtGui.QColor(0, 0, 0, 170))
-                painter.drawRoundedRect(box.adjusted(-6, -22, 6, 6), 8, 8)
-
-                painter.drawPixmap(box.topLeft(), zoomed)
-                pen = QtGui.QPen(QtGui.QColor(255, 255, 255, 220))
-                pen.setWidth(2)
-                painter.setPen(pen)
-                painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
-                painter.drawRect(box)
-
-                # Crosshair at center
-                cx = box.center().x()
-                cy = box.center().y()
-                pen2 = QtGui.QPen(QtGui.QColor(0, 200, 255, 230))
-                pen2.setWidth(2)
-                painter.setPen(pen2)
-                painter.drawLine(cx - 10, cy, cx + 10, cy)
-                painter.drawLine(cx, cy - 10, cx, cy + 10)
-
-                # Title
-                painter.setPen(QtGui.QColor(255, 255, 255, 235))
-                painter.drawText(
-                    QtCore.QRect(box.x() - 6, box.y() - 22, box.width() + 12, 18),
-                    QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter,
-                    f"Zoom {self._magnifier_zoom}x",
-                )
+        # Magnifier is drawn above (also when not dragging)
 
 
 class PointSelectOverlay(QtWidgets.QWidget):

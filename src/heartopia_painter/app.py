@@ -58,6 +58,8 @@ class WorkerSignals(QtCore.QObject):
     progress = QtCore.Signal(int, int)
     finished = QtCore.Signal()
     error = QtCore.Signal(str)
+    paused = QtCore.Signal(str)
+    stopped = QtCore.Signal(str)
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -80,6 +82,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._esc_listener = None
 
         self._stop_flag = False
+        self._stop_reason: Optional[str] = None  # "pause" | "stop" | None
         # Paint session state (used for pause/resume)
         self._paint_total: int = 0
         self._paint_done: set[tuple[int, int]] = set()
@@ -104,11 +107,15 @@ class MainWindow(QtWidgets.QMainWindow):
         def on_press(key):
             try:
                 if key == keyboard.Key.esc:
-                    # Stop painting immediately (worker thread checks should_stop).
+                    # Pause painting immediately (worker thread checks should_stop).
+                    self._stop_reason = "pause"
                     self._stop_flag = True
 
-                    # Also route through the normal Stop path on the UI thread.
-                    self._run_on_ui_thread(self._on_stop)
+                    # Stop listening so we don't re-trigger.
+                    try:
+                        self._run_on_ui_thread(lambda: self.statusBar().showMessage("Pausing…", 1500))
+                    except Exception:
+                        pass
                     return False  # stop listener
             except Exception:
                 return None
@@ -1059,6 +1066,8 @@ class MainWindow(QtWidgets.QMainWindow):
         return dlg.exec() == QtWidgets.QDialog.DialogCode.Accepted
 
     def _on_stop(self):
+        # Manual stop is a cancel.
+        self._stop_reason = "stop"
         self._stop_flag = True
         self._stop_esc_listener()
     def _current_paint_session_sig(self) -> Optional[tuple]:
@@ -1103,6 +1112,22 @@ class MainWindow(QtWidgets.QMainWindow):
         self._stop_esc_listener()
         self._reset_paint_session()
 
+    def _on_paint_paused(self, msg: str) -> None:
+        self.btn_paint.setEnabled(True)
+        self.btn_resume.setEnabled(True)
+        self.btn_stop.setEnabled(False)
+        self._stop_esc_listener()
+        self._paint_paused = True
+        self.statusBar().showMessage(msg or "Paused", 4000)
+
+    def _on_paint_stopped(self, msg: str) -> None:
+        self.btn_paint.setEnabled(True)
+        self.btn_resume.setEnabled(False)
+        self.btn_stop.setEnabled(False)
+        self._stop_esc_listener()
+        self._reset_paint_session()
+        self.statusBar().showMessage(msg or "Stopped", 4000)
+
     def _on_paint_error(self, msg: str):
         self.btn_paint.setEnabled(True)
         self.btn_stop.setEnabled(False)
@@ -1144,12 +1169,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_resume.setEnabled(False)
         self.btn_stop.setEnabled(True)
         self._stop_flag = False
+        self._stop_reason = None
         self._start_esc_listener()
 
         signals = WorkerSignals()
         signals.progress.connect(lambda x, y: self._on_progress(x, y, total))
         signals.finished.connect(self._on_paint_done)
         signals.error.connect(self._on_paint_error)
+        signals.paused.connect(self._on_paint_paused)
+        signals.stopped.connect(self._on_paint_stopped)
 
         def work():
             try:
@@ -1183,6 +1211,15 @@ class MainWindow(QtWidgets.QMainWindow):
                     progress_cb=lambda x, y: signals.progress.emit(x, y),
                     should_stop=lambda: self._stop_flag,
                 )
+
+                if self._stop_flag:
+                    if self._stop_reason == "pause":
+                        signals.paused.emit("Paused (ESC)")
+                        return
+                    if self._stop_reason == "stop":
+                        signals.stopped.emit("Stopped")
+                        return
+
                 signals.finished.emit()
             except Exception as e:
                 signals.error.emit(str(e))
