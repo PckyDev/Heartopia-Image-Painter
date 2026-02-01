@@ -356,6 +356,65 @@ def _paint_coord_runs(
         i = j
 
 
+def _verify_outline_then_repair(
+    cfg: AppConfig,
+    canvas_rect: Tuple[int, int, int, int],
+    grid_w: int,
+    grid_h: int,
+    outline_coords: List[Tuple[int, int]],
+    expected_rgb: RGB,
+    options: PainterOptions,
+    should_stop: Optional[Callable[[], bool]] = None,
+) -> bool:
+    """Verify outline pixels are painted correctly; repaint misses if needed.
+
+    Returns True when the outline verifies within max passes.
+    Returns False if it never converges (caller should skip bucket-fill).
+    """
+
+    if not outline_coords:
+        return True
+
+    tol = int(getattr(cfg, "verify_tolerance", 35))
+    tol2 = max(0, tol) ** 2
+    settle_s = max(0.0, float(getattr(cfg, "verify_settle_s", 0.05)))
+    # Outline verification is just for spill safety; keep it bounded.
+    max_passes = max(1, min(5, int(getattr(cfg, "verify_max_passes", 10))))
+
+    coords = list(outline_coords)
+    coords.sort(key=lambda xy: (xy[1], xy[0]))
+
+    for _pass in range(max_passes):
+        if should_stop and should_stop():
+            return False
+        if settle_s > 0:
+            time.sleep(settle_s)
+
+        mism: List[Tuple[int, int]] = []
+        for x, y in coords:
+            cx, cy = _cell_center(canvas_rect, grid_w, grid_h, x, y)
+            actual = get_screen_pixel_rgb(cx, cy)
+            if _dist2(actual, expected_rgb) > tol2:
+                mism.append((x, y))
+
+        if not mism:
+            return True
+
+        # Repaint just the mismatched outline pixels.
+        _paint_coord_runs(
+            cfg=cfg,
+            canvas_rect=canvas_rect,
+            grid_w=grid_w,
+            grid_h=grid_h,
+            coords=mism,
+            options=options,
+            progress_cb=None,
+            should_stop=should_stop,
+        )
+
+    return False
+
+
 def _verify_and_repair_row(
     cfg: AppConfig,
     canvas_rect: Tuple[int, int, int, int],
@@ -959,6 +1018,20 @@ def _paint_grid_by_color(
                     progress_cb=None,
                     should_stop=should_stop,
                 )
+
+                # Verify the outline before bucket-fill to reduce spill risk.
+                if not _verify_outline_then_repair(
+                    cfg=cfg,
+                    canvas_rect=canvas_rect,
+                    grid_w=grid_w,
+                    grid_h=grid_h,
+                    outline_coords=boundary,
+                    expected_rgb=shade.rgb,
+                    options=options,
+                    should_stop=should_stop,
+                ):
+                    # Can't guarantee a sealed boundary; skip bucket-fill for safety.
+                    continue
 
                 if should_stop and should_stop():
                     return
