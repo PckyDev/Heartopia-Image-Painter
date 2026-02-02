@@ -16,6 +16,7 @@ from .paint import PainterOptions, erase_canvas, paint_grid
 
 
 ONE_TO_ONE_PRESET_NAME = "1:1"
+SIXTEEN_NINE_PRESET_NAME = "16:9"
 TSHIRT_PRESET_NAME = "T-Shirt"
 
 ONE_TO_ONE_PRECISIONS: dict[str, Tuple[int, int]] = {
@@ -23,6 +24,13 @@ ONE_TO_ONE_PRECISIONS: dict[str, Tuple[int, int]] = {
     "Medium": (50, 50),
     "Big": (100, 100),
     "Super Large": (150, 150),
+}
+
+SIXTEEN_NINE_PRECISIONS: dict[str, Tuple[int, int]] = {
+    "Small": (30, 18),
+    "Medium": (50, 28),
+    "Big": (100, 56),
+    "Super Large": (150, 84),
 }
 
 TSHIRT_PARTS: dict[str, Tuple[int, int]] = {
@@ -34,7 +42,7 @@ TSHIRT_PARTS: dict[str, Tuple[int, int]] = {
 
 
 def selection_key(preset: str, variant: Optional[str]) -> str:
-    if preset == ONE_TO_ONE_PRESET_NAME:
+    if preset in {ONE_TO_ONE_PRESET_NAME, SIXTEEN_NINE_PRESET_NAME}:
         precision = variant or "Small"
         return f"{preset}::{precision}"
     if preset == TSHIRT_PRESET_NAME:
@@ -252,7 +260,7 @@ class MainWindow(QtWidgets.QMainWindow):
         row2 = QtWidgets.QHBoxLayout()
         row2.addWidget(QtWidgets.QLabel("Canvas preset:"))
         self.cbo_preset = QtWidgets.QComboBox()
-        self.cbo_preset.addItems([ONE_TO_ONE_PRESET_NAME, TSHIRT_PRESET_NAME])
+        self.cbo_preset.addItems([ONE_TO_ONE_PRESET_NAME, SIXTEEN_NINE_PRESET_NAME, TSHIRT_PRESET_NAME])
         row2.addWidget(self.cbo_preset, 1)
 
         self.lbl_precision = QtWidgets.QLabel("Precision:")
@@ -555,12 +563,15 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._cfg.canvas_preset and self.cbo_preset.findText(self._cfg.canvas_preset) >= 0:
             self.cbo_preset.setCurrentText(self._cfg.canvas_preset)
 
-        # Restore 1:1 precision
-        if (
-            getattr(self._cfg, "one_to_one_precision", None)
-            and self.cbo_precision.findText(self._cfg.one_to_one_precision) >= 0
-        ):
-            self.cbo_precision.setCurrentText(self._cfg.one_to_one_precision)
+        # Restore precision
+        if self._cfg.canvas_preset == ONE_TO_ONE_PRESET_NAME:
+            prec = getattr(self._cfg, "one_to_one_precision", None)
+            if prec and self.cbo_precision.findText(prec) >= 0:
+                self.cbo_precision.setCurrentText(prec)
+        elif self._cfg.canvas_preset == SIXTEEN_NINE_PRESET_NAME:
+            prec = getattr(self._cfg, "sixteen_nine_precision", None)
+            if prec and self.cbo_precision.findText(prec) >= 0:
+                self.cbo_precision.setCurrentText(prec)
 
         # Restore T-Shirt part
         if self._cfg.tshirt_part and self.cbo_part.findText(self._cfg.tshirt_part) >= 0:
@@ -708,6 +719,8 @@ class MainWindow(QtWidgets.QMainWindow):
         part_txt = ""
         if preset == ONE_TO_ONE_PRESET_NAME:
             part_txt = f" — {self.cbo_precision.currentText()}"
+        elif preset == SIXTEEN_NINE_PRESET_NAME:
+            part_txt = f" — {self.cbo_precision.currentText()}"
         elif preset == TSHIRT_PRESET_NAME:
             part_txt = f" — {self.cbo_part.currentText()}"
 
@@ -769,6 +782,9 @@ class MainWindow(QtWidgets.QMainWindow):
         if preset == ONE_TO_ONE_PRESET_NAME:
             precision = self.cbo_precision.currentText() or self._cfg.one_to_one_precision or "Small"
             return ONE_TO_ONE_PRECISIONS.get(precision, ONE_TO_ONE_PRECISIONS["Small"])
+        if preset == SIXTEEN_NINE_PRESET_NAME:
+            precision = self.cbo_precision.currentText() or getattr(self._cfg, "sixteen_nine_precision", "Small") or "Small"
+            return SIXTEEN_NINE_PRECISIONS.get(precision, SIXTEEN_NINE_PRECISIONS["Small"])
         if preset == TSHIRT_PRESET_NAME:
             part = self.cbo_part.currentText() or self._cfg.tshirt_part or "Front"
             return TSHIRT_PARTS.get(part, TSHIRT_PARTS["Front"])
@@ -779,6 +795,9 @@ class MainWindow(QtWidgets.QMainWindow):
         if preset == ONE_TO_ONE_PRESET_NAME:
             precision = self.cbo_precision.currentText() or self._cfg.one_to_one_precision or "Small"
             return selection_key(preset, precision)
+        if preset == SIXTEEN_NINE_PRESET_NAME:
+            precision = self.cbo_precision.currentText() or getattr(self._cfg, "sixteen_nine_precision", "Small") or "Small"
+            return selection_key(preset, precision)
         if preset == TSHIRT_PRESET_NAME:
             part = self.cbo_part.currentText() if preset == TSHIRT_PRESET_NAME else None
             return selection_key(preset, part)
@@ -786,11 +805,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _update_variant_ui_visibility(self) -> None:
         preset = self.cbo_preset.currentText()
-        is_one_to_one = preset == ONE_TO_ONE_PRESET_NAME
+        is_precision = preset in {ONE_TO_ONE_PRESET_NAME, SIXTEEN_NINE_PRESET_NAME}
         is_tshirt = preset == TSHIRT_PRESET_NAME
 
-        self.lbl_precision.setVisible(is_one_to_one)
-        self.cbo_precision.setVisible(is_one_to_one)
+        self.lbl_precision.setVisible(is_precision)
+        self.cbo_precision.setVisible(is_precision)
         self.lbl_part.setVisible(is_tshirt)
         self.cbo_part.setVisible(is_tshirt)
 
@@ -924,15 +943,25 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_variant_ui_visibility()
         if self.cbo_preset.currentText() == ONE_TO_ONE_PRESET_NAME:
             self._cfg.one_to_one_precision = self.cbo_precision.currentText() or self._cfg.one_to_one_precision
+        if self.cbo_preset.currentText() == SIXTEEN_NINE_PRESET_NAME:
+            self._cfg.sixteen_nine_precision = self.cbo_precision.currentText() or getattr(
+                self._cfg, "sixteen_nine_precision", "Small"
+            )
         if self.cbo_preset.currentText() == TSHIRT_PRESET_NAME:
             self._cfg.tshirt_part = self.cbo_part.currentText() or self._cfg.tshirt_part
         self._save_cfg()
         self._restore_selection_state()
 
     def _on_precision_changed(self, _text: str):
-        if self.cbo_preset.currentText() != ONE_TO_ONE_PRESET_NAME:
+        preset = self.cbo_preset.currentText()
+        if preset == ONE_TO_ONE_PRESET_NAME:
+            self._cfg.one_to_one_precision = self.cbo_precision.currentText() or self._cfg.one_to_one_precision
+        elif preset == SIXTEEN_NINE_PRESET_NAME:
+            self._cfg.sixteen_nine_precision = self.cbo_precision.currentText() or getattr(
+                self._cfg, "sixteen_nine_precision", "Small"
+            )
+        else:
             return
-        self._cfg.one_to_one_precision = self.cbo_precision.currentText() or self._cfg.one_to_one_precision
         self._save_cfg()
         self._restore_selection_state()
 

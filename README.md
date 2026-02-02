@@ -51,6 +51,10 @@ From the repo folder:
 | 1:1 | Medium | 50×50 |
 | 1:1 | Big | 100×100 |
 | 1:1 | Super Large | 150×150 |
+| 16:9 | Small | 30×18 |
+| 16:9 | Medium | 50×28 |
+| 16:9 | Big | 100×56 |
+| 16:9 | Super Large | 150×84 |
 | T-Shirt | Front | 64×80 |
 | T-Shirt | Back | 64×80 |
 | T-Shirt | Left Sleeve | 64×48 |
