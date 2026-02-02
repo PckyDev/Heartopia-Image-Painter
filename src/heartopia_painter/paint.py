@@ -619,7 +619,19 @@ def _verify_outline_then_repair(
                 # Primary goal: outline should not look like base.
                 # If expected_rgb is provided too, use it to disambiguate when the
                 # outline shade is close to the base shade (avoid false mismatches).
-                looks_like_base = _dist2(actual, base_ref) <= base_tol2
+                # Hole detection must always consider the global base.
+                # Local base sampling can be polluted if the nearest "outside"
+                # neighbor is already painted, which would otherwise mask holes.
+                looks_like_base = False
+                try:
+                    looks_like_base = looks_like_base or (_dist2(actual, avoid_rgb) <= base_tol2)
+                except Exception:
+                    pass
+                try:
+                    if base_ref is not None:
+                        looks_like_base = looks_like_base or (_dist2(actual, base_ref) <= base_tol2)
+                except Exception:
+                    pass
                 if expected_rgb is not None:
                     looks_like_expected = _dist2(actual, expected_rgb) <= tol2
                     if looks_like_base and (not looks_like_expected):
@@ -1559,8 +1571,14 @@ def _paint_grid_by_color(
                             if (nx, ny) not in comp_set:
                                 cx2, cy2 = _cell_center(canvas_rect, grid_w, grid_h, int(nx), int(ny))
                                 rgb2 = get_screen_pixel_rgb(cx2, cy2)
-                                local_base_cache[key] = rgb2
-                                return rgb2
+                                if base_rgb is not None:
+                                    tol = int(getattr(cfg, "verify_tolerance", 35))
+                                    base_tol = max(8, int(tol * 0.5))
+                                    base_tol2 = max(0, base_tol) ** 2
+                                    if _dist2(rgb2, base_rgb) <= base_tol2:
+                                        local_base_cache[key] = rgb2
+                                        return rgb2
+                                break
                     except Exception:
                         return base_rgb
                     return base_rgb
@@ -1597,12 +1615,15 @@ def _paint_grid_by_color(
                         base_tol2 = max(0, base_tol) ** 2
                         tol2 = max(0, int(tol)) ** 2
                         base_ref = _local_base_rgb(int(ox), int(oy))
+                        looks_like_base = False
+                        if base_rgb is not None:
+                            looks_like_base = looks_like_base or (_dist2(actual, base_rgb) <= base_tol2)
                         if base_ref is not None:
-                            looks_like_base = _dist2(actual, base_ref) <= base_tol2
-                            looks_like_expected = _dist2(actual, shade.rgb) <= tol2
-                            if looks_like_base and (not looks_like_expected):
-                                _tap((cx, cy), outline_opts)
-                                _tap((cx, cy), outline_opts, extra_delay_s=0.01)
+                            looks_like_base = looks_like_base or (_dist2(actual, base_ref) <= base_tol2)
+                        looks_like_expected = _dist2(actual, shade.rgb) <= tol2
+                        if looks_like_base and (not looks_like_expected):
+                            _tap((cx, cy), outline_opts)
+                            _tap((cx, cy), outline_opts, extra_delay_s=0.01)
                         steps += 1
 
                 def _outline_progress(x: int, y: int) -> None:
@@ -1628,6 +1649,33 @@ def _paint_grid_by_color(
                     progress_cb=_outline_progress if outline_streaming else None,
                     should_stop=should_stop,
                 )
+
+                # Large regions can develop tiny holes. A second outline pass helps, but costs time.
+                # Only do it for large regions whose shade is close to base (low contrast), since those
+                # are more likely to miss/verify poorly and leak.
+                do_second_outline_pass = False
+                if len(comp) >= (max(1, int(regions_min_cells)) * 2):
+                    if base_rgb is None:
+                        do_second_outline_pass = True
+                    else:
+                        tol = int(getattr(cfg, "verify_tolerance", 35))
+                        close_thresh = max(60, int(tol * 2))
+                        try:
+                            do_second_outline_pass = _dist2(shade.rgb, base_rgb) <= (close_thresh * close_thresh)
+                        except Exception:
+                            do_second_outline_pass = True
+
+                if do_second_outline_pass:
+                    _paint_coord_runs(
+                        cfg=cfg,
+                        canvas_rect=canvas_rect,
+                        grid_w=grid_w,
+                        grid_h=grid_h,
+                        coords=boundary,
+                        options=outline_opts,
+                        progress_cb=_outline_progress if outline_streaming else None,
+                        should_stop=should_stop,
+                    )
 
                 if outline_streaming:
                     _outline_flush(force=True, max_steps=999999)
