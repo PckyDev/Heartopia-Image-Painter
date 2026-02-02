@@ -1797,6 +1797,13 @@ def _paint_grid_by_color(
                             status_cb("Region fill warning: fill click(s) had no effect; painting region normally")
                         except Exception:
                             pass
+                    # Defensive: ensure we are back on the paint tool before the
+                    # subsequent normal-paint pass (avoid accidentally painting
+                    # with the bucket tool if the tool switch didn't register).
+                    try:
+                        _tap(cfg.paint_tool_button_pos, options, extra_delay_s=0.02)
+                    except Exception:
+                        pass
 
                 if spill_detected:
                     disable_regions_for_rest = True
@@ -1840,6 +1847,16 @@ def _paint_grid_by_color(
                     status_cb(f"Painting shade: {main.name}/{shade.name} ({len(remaining)} px) …")
             except Exception:
                 pass
+
+        # Defensive: ensure the paint tool is active before doing normal pixel
+        # painting. Region bucket-fill uses the bucket tool and, very rarely,
+        # the switch back can fail to register, which would cause catastrophic
+        # bucket-painting during the normal pass.
+        try:
+            if cfg.paint_tool_button_pos is not None:
+                _tap(cfg.paint_tool_button_pos, options, extra_delay_s=0.02)
+        except Exception:
+            pass
 
         # Streaming verify for this shade: verify a few cells behind as we paint,
         # then flush at the end of the shade.
