@@ -269,7 +269,7 @@ class MainWindow(QtWidgets.QMainWindow):
         row2 = QtWidgets.QHBoxLayout()
         row2.addWidget(QtWidgets.QLabel("Canvas preset:"))
         self.cbo_preset = QtWidgets.QComboBox()
-        self.cbo_preset.addItems([ONE_TO_ONE_PRESET_NAME, SIXTEEN_NINE_PRESET_NAME, TSHIRT_PRESET_NAME])
+        self.cbo_preset.addItems([ONE_TO_ONE_PRESET_NAME, SIXTEEN_NINE_PRESET_NAME, NINE_SIXTEEN_PRESET_NAME, TSHIRT_PRESET_NAME])
         row2.addWidget(self.cbo_preset, 1)
 
         self.lbl_precision = QtWidgets.QLabel("Precision:")
