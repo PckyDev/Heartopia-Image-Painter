@@ -17,6 +17,7 @@ from .paint import PainterOptions, erase_canvas, paint_grid
 
 ONE_TO_ONE_PRESET_NAME = "1:1"
 SIXTEEN_NINE_PRESET_NAME = "16:9"
+NINE_SIXTEEN_PRESET_NAME = "9:16"
 TSHIRT_PRESET_NAME = "T-Shirt"
 
 ONE_TO_ONE_PRECISIONS: dict[str, Tuple[int, int]] = {
@@ -31,6 +32,14 @@ SIXTEEN_NINE_PRECISIONS: dict[str, Tuple[int, int]] = {
     "Medium": (50, 28),
     "Big": (100, 56),
     "Super Large": (150, 84),
+}
+
+# Portrait presets (9:16) — widths x heights provided by user
+NINE_SIXTEEN_PRECISIONS: dict[str, Tuple[int, int]] = {
+    "Small": (18, 30),
+    "Medium": (28, 50),
+    "Big": (56, 100),
+    "Super Large": (84, 150),
 }
 
 TSHIRT_PARTS: dict[str, Tuple[int, int]] = {
