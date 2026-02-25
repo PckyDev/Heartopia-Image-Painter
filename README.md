@@ -11,6 +11,7 @@ This app uses on-screen overlays for picking points/areas and uses mouse automat
 ## Features
 
 - Import any image and resize it to a preset grid
+- Optional palette dithering for smoother gradients with limited in-game shades
 - On-screen **canvas area selection** with translucent preview
 - Guided **palette setup wizard** (captures button positions and samples their RGB)
 - Adjustable **timing / reliability** controls (useful if clicks don’t register)
@@ -70,6 +71,7 @@ From the repo folder:
 3. Choose a **Canvas preset**.
 	- If you choose **T-Shirt**, also choose a **Part** (Front/Back/Sleeves).
 4. Click **Import image…** and pick an image.
+	- Optional: enable **Dither image to configured palette** to reduce harsh gradient banding.
 5. Click **Select canvas area…** and drag a rectangle over the in-game canvas.
 	- You’ll see a translucent preview to help align it.
 	- Scroll the mouse wheel to enable/adjust a small zoom window near your cursor for precise alignment.

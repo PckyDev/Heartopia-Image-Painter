@@ -88,6 +88,10 @@ class AppConfig:
     # - "color": group by shade and paint one shade at a time
     paint_mode: str = "row"
 
+    # Optional image preprocessing: dither to the configured palette (shade RGBs)
+    # before painting. This can create smoother gradients with limited palettes.
+    dither_enabled: bool = False
+
     # Optional speed-up: bucket-fill the most used shade first.
     bucket_fill_enabled: bool = False
     bucket_fill_min_cells: int = 50
@@ -246,6 +250,9 @@ class AppConfig:
                 cfg.paint_mode = "color"
         else:
             cfg.paint_mode = cfg.paint_mode
+
+        cfg.dither_enabled = bool(data.get("dither_enabled", cfg.dither_enabled))
+
         cfg.shades_panel_button_pos = to_tuple2(data.get("shades_panel_button_pos"))
         cfg.back_button_pos = to_tuple2(data.get("back_button_pos"))
 

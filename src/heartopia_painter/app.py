@@ -265,6 +265,12 @@ class MainWindow(QtWidgets.QMainWindow):
         row1.addWidget(self.lbl_image, 1)
         tab_main_layout.addLayout(row1)
 
+        row1b = QtWidgets.QHBoxLayout()
+        self.chk_dither = QtWidgets.QCheckBox("Dither image to configured palette")
+        row1b.addWidget(self.chk_dither)
+        row1b.addStretch(1)
+        tab_main_layout.addLayout(row1b)
+
         # Preset / Precision / Part
         row2 = QtWidgets.QHBoxLayout()
         row2.addWidget(QtWidgets.QLabel("Canvas preset:"))
@@ -483,6 +489,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Wiring
         self.btn_load.clicked.connect(self._on_load)
+        self.chk_dither.stateChanged.connect(lambda _v: self._on_dither_changed())
         self.btn_select_canvas.clicked.connect(self._on_select_canvas)
         self.btn_set_shades_button.clicked.connect(lambda: self._capture_global_button("shades"))
         self.btn_set_back_button.clicked.connect(lambda: self._capture_global_button("back"))
@@ -643,6 +650,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.chk_bucket_regions.blockSignals(True)
         self.spin_bucket_regions_min.blockSignals(True)
         self.chk_status_overlay.blockSignals(True)
+        self.chk_dither.blockSignals(True)
 
         self.spin_move.setValue(to_ms(self._cfg.move_duration_s))
         self.spin_down.setValue(to_ms(self._cfg.mouse_down_s))
@@ -670,6 +678,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.spin_bucket_regions_min.setValue(int(getattr(self._cfg, "bucket_fill_regions_min_cells", 200)))
 
         self.chk_status_overlay.setChecked(bool(getattr(self._cfg, "status_overlay_enabled", True)))
+        self.chk_dither.setChecked(bool(getattr(self._cfg, "dither_enabled", False)))
 
         for w in widgets:
             w.blockSignals(False)
@@ -685,6 +694,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.chk_bucket_regions.blockSignals(False)
         self.spin_bucket_regions_min.blockSignals(False)
         self.chk_status_overlay.blockSignals(False)
+        self.chk_dither.blockSignals(False)
 
     def _on_timing_changed(self, _value: int):
         # Persist timing settings immediately
@@ -839,10 +849,11 @@ class MainWindow(QtWidgets.QMainWindow):
             p = Path(img_path)
             if p.exists():
                 try:
-                    w, h = self._selected_preset_wh()
-                    grid = load_and_resize_to_grid(str(p), w=w, h=h)
+                    grid = self._load_image_grid_for_current_preset(str(p))
                     self._loaded = LoadedImage(path=str(p), grid=grid)
-                    self.lbl_image.setText(f"Loaded: {p} ({w}x{h})")
+                    self.lbl_image.setText(
+                        f"Loaded: {p} ({grid.w}x{grid.h})" + (" [dither]" if self._cfg.dither_enabled else "")
+                    )
                 except Exception:
                     # If the image can't be loaded anymore, just ignore it.
                     self._loaded = None
@@ -854,8 +865,49 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._refresh_config_view()
 
-    def _on_load(self):
+    def _palette_rgbs(self) -> list[tuple[int, int, int]]:
+        rgbs: list[tuple[int, int, int]] = []
+        for mc in getattr(self._cfg, "main_colors", []) or []:
+            for sh in getattr(mc, "shades", []) or []:
+                rgb = getattr(sh, "rgb", None)
+                if not rgb:
+                    continue
+                rgbs.append((int(rgb[0]), int(rgb[1]), int(rgb[2])))
+        return rgbs
+
+    def _load_image_grid_for_current_preset(self, path: str) -> PixelGrid:
         w, h = self._selected_preset_wh()
+        use_dither = bool(getattr(self._cfg, "dither_enabled", False))
+        palette = self._palette_rgbs() if use_dither else None
+        return load_and_resize_to_grid(
+            path,
+            w=w,
+            h=h,
+            dither=use_dither,
+            palette=palette,
+        )
+
+    def _reload_loaded_grid(self, *, show_error_title: str = "Reload failed") -> None:
+        if self._loaded is None:
+            return
+        path = self._loaded.path
+        try:
+            grid = self._load_image_grid_for_current_preset(path)
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(self, show_error_title, str(e))
+            return
+        self._loaded = LoadedImage(path=path, grid=grid)
+        self.lbl_image.setText(
+            f"Loaded: {path} ({grid.w}x{grid.h})" + (" [dither]" if self._cfg.dither_enabled else "")
+        )
+
+    def _on_dither_changed(self) -> None:
+        self._cfg.dither_enabled = bool(self.chk_dither.isChecked())
+        self._save_cfg()
+        # Rebuild current grid so preview + painting use the updated setting.
+        self._reload_loaded_grid(show_error_title="Dither update failed")
+
+    def _on_load(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self,
             "Select image",
@@ -865,13 +917,15 @@ class MainWindow(QtWidgets.QMainWindow):
         if not path:
             return
         try:
-            grid = load_and_resize_to_grid(path, w=w, h=h)
+            grid = self._load_image_grid_for_current_preset(path)
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Import failed", str(e))
             return
 
         self._loaded = LoadedImage(path=path, grid=grid)
-        self.lbl_image.setText(f"Loaded: {path} ({w}x{h})")
+        self.lbl_image.setText(
+            f"Loaded: {path} ({grid.w}x{grid.h})" + (" [dither]" if self._cfg.dither_enabled else "")
+        )
 
         sel_key = self._current_selection_key()
         self._cfg.last_image_path_by_key[sel_key] = path
@@ -1109,6 +1163,8 @@ class MainWindow(QtWidgets.QMainWindow):
                     break
             self._save_cfg()
             self._refresh_config_view()
+            if self._cfg.dither_enabled:
+                self._reload_loaded_grid(show_error_title="Palette update failed")
             dlg.close()
 
             QtWidgets.QMessageBox.information(
@@ -1149,6 +1205,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._cfg.main_colors.pop(idx)
         self._save_cfg()
         self._refresh_config_view()
+        if self._cfg.dither_enabled:
+            self._reload_loaded_grid(show_error_title="Palette update failed")
 
     def _on_fix_swap_rb(self):
         if (
@@ -1175,6 +1233,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._save_cfg()
         self._refresh_config_view()
+        if self._cfg.dither_enabled:
+            self._reload_loaded_grid(show_error_title="Palette update failed")
         QtWidgets.QMessageBox.information(self, "Done", "Swapped R/B for saved colors.")
 
     def _on_paint(self):
